@@ -12,3 +12,4 @@ data:
   pin_memory: False 
   dataset_conf: config/datasets/poesy_infer.json
   predict_conf: null
+  ensemble_metrics: False

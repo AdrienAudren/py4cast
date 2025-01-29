@@ -59,6 +59,7 @@ class PlDataModule(LightningDataModule):
         pin_memory: bool = False,
         dataset_conf: Path | None = None,
         predict_conf: Dict | None = None,
+        ensemble_metrics: bool = False,
     ):
         super().__init__()
         self.num_input_steps = num_input_steps
@@ -160,6 +161,7 @@ class AutoRegressiveLightning(LightningModule):
         num_pred_steps_train: int = 1,
         num_pred_steps_val_test: int = 1,
         batch_size: int = 2,
+        ensemble_metrics: bool = False,
         # non-linked args
         model_name: Literal[tuple(model_registry.keys())] = "HalfUNet",
         model_conf: Path | None = None,
@@ -296,6 +298,7 @@ class AutoRegressiveLightning(LightningModule):
             self.rmse_psd_plot_metric = MetricPSDVar(pred_step=max_pred_step)
             self.psd_plot_metric = MetricPSDK(self.save_path, pred_step=max_pred_step)
             self.acc_metric = MetricACC(self.dataset_info)
+            self.spread_metric = MetricSpread(self.dataset_info)
             self.configure_loggers()
 
     def configure_loggers(self):
@@ -844,6 +847,9 @@ class AutoRegressiveLightning(LightningModule):
             self.acc_metric.update(prediction, target)
             self.psd_plot_metric.update(prediction, target, self.original_shape)
             self.rmse_psd_plot_metric.update(prediction, target, self.original_shape)
+
+            if self.ensemble_metrics:
+                self.spread_metric.update(prediction, target)
 
     @cached_property
     def interior_2d(self) -> torch.Tensor:
