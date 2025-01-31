@@ -17,7 +17,7 @@
         }
     },
     "grid":{
-        "name": "PAAROME_1S100",
+        "name": "PAAROME_1S40",
         "border_size": 0,
         "subdomain": [256,384,760,888],
         "proj_name": "PlateCarree",
