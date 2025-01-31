@@ -28,7 +28,7 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
     - class_path: lightning.pytorch.loggers.TensorBoardLogger
       init_args:
         # default_hp_metric: False # see if tensoboard still works before rm TODO
-        save_dir: "/py4cast_root_dir"        # Root directory
+        save_dir: "/py4cast_root_dir/test_metrics"        # Root directory
         name:                             # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
         version:                          # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
     # Your logs will be saved in save_dir/*name*/version/
