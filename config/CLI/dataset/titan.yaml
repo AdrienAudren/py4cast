@@ -4,10 +4,10 @@ data:
   num_input_steps: 1
   num_pred_steps_train: 1
   num_pred_steps_val_test: 1
-  batch_size: 2
+  batch_size: 7
 
   #other args
-  num_workers: 10
+  num_workers: 14
   prefetch_factor: null
   pin_memory: False 
   dataset_conf: config/datasets/titan_full.json
