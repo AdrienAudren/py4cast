@@ -691,6 +691,10 @@ class DatasetABC(Dataset):
         print(
             f"--> {len(samples)} {self.period.name} samples are now defined, with {invalid_samples} invalid samples."
         )
+        ##########
+        for sample in samples:
+            print(sample.member)
+        ##########
         return samples
 
     def torch_dataloader(
@@ -700,6 +704,7 @@ class DatasetABC(Dataset):
         shuffle: bool = False,
         prefetch_factor: Union[int, None] = None,
         pin_memory: bool = False,
+        persistent_workers: bool = True,
     ) -> DataLoader:
         """
         Builds a torch dataloader from self.

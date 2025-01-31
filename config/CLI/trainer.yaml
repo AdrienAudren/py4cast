@@ -1,7 +1,7 @@
 # lightning.pytorch==2.4.0
 seed_everything: true
 
-ckpt_path: #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
+ckpt_path: "/path2ckpt/last.ckpt" #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
 
 optimizer:
   class_path: torch.optim.AdamW
@@ -12,7 +12,7 @@ lr_scheduler:
   class_path: pl_bolts.optimizers.lr_scheduler.LinearWarmupCosineAnnealingLR
   init_args:
     warmup_epochs: 1
-    max_epochs: 50
+    max_epochs: 250
     eta_min: 0
 
 
@@ -28,7 +28,7 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
     - class_path: lightning.pytorch.loggers.TensorBoardLogger
       init_args:
         # default_hp_metric: False # see if tensoboard still works before rm TODO
-        save_dir: "lightning_logs"        # Root directory
+        save_dir: "/py4cast_root_dir"        # Root directory
         name:                             # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
         version:                          # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
     # Your logs will be saved in save_dir/*name*/version/
@@ -72,8 +72,8 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
   check_val_every_n_epoch: 1   # Number of epochs training between each validation run
   precision: 32                # Numerical precision to use for model (32/16/bf16/64)
   strategy: auto               # Training strategy alias (auto, ddp, fsdp, etc)
-  accelerator: auto            # Type of device (auto, gpu, cpu)
-  devices: auto                # Number of devices (auto or NUM)
+  accelerator: gpu            # Type of device (auto, gpu, cpu)
+  devices: 1                # Number of devices (auto or NUM)
   limit_train_batches: null    # Limit num of batches per epoch (to do very short training)
   limit_val_batches: null
   limit_test_batches: null

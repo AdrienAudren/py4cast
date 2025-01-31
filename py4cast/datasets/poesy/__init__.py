@@ -26,7 +26,7 @@ from py4cast.settings import CACHE_DIR
 class PoesyAccessor(DataAccessor):
     def cache_dir(self, name: str, grid: Grid):
         complete_name = str(name) + "_" + grid.name
-        return CACHE_DIR / complete_name
+        return self.get_dataset_path(name, grid)
 
     @staticmethod
     def get_dataset_path(name: str, grid: Grid) -> Path:
@@ -85,7 +85,7 @@ class PoesyAccessor(DataAccessor):
         var_file_name = METADATA["WEATHER_PARAMS"][param.name]["file_name"]
         return (
             SCRATCH_PATH
-            / f"{date.strftime('%Y-%m-%dT%H:%M:%SZ')}_{var_file_name}_lt1-45_crop.npy"
+            / f"{date.strftime('%Y-%m-%dT%H:%M:%SZ')}_{var_file_name}_lt1-45.npy"
         )
 
     @classmethod

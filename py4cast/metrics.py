@@ -435,97 +435,67 @@ class MetricACC(Metric):
 
         return metric_log_dict
 
-# class MetricSpread(Metric):
-#     """
-#     Compute the spatially averaged, per pred step Anomaly Correlation Coefficent between the target and the prediction
-#     Anomalies are computed with respect to "climate" normals that must be provided beforehand
-#     """
+class MetricSpread(Metric):
+    """
+    Compute the spatially averaged, per pred step members spread for both the target (PE-AROME) and the prediction
+    """
 
-#     def __init__(self, dataset_info: DatasetInfo):
-#         super().__init__()
+    def __init__(self, dataset_info: DatasetInfo, pred_step: int = 0):
+        super().__init__()
+        self.pred_step = pred_step 
+        
+        self.add_state("preds_std", default=torch.zeros((self.pred_step)), dist_reduce_fx="sum")
+        self.add_state("target_std", default=torch.zeros((self.pred_step)), dist_reduce_fx="sum")
+        # dist_reduce_fx="sum" because step_count is also summed accross processes
 
-#         # storing climate normals as a tensor
-#         warnings.warn(
-#             "You are using ACC metric, which supposes access to climate normals. "
-#             "From now on these normals are NOT grid point dependent, "
-#             "there is only one scalar value for each field. "
-#             "Values of ACC using spatialised climate normals "
-#             "may be very different from those outputted by this metric."
-#         )
-#         names = (
-#             dataset_info.shortnames["input_output"] + dataset_info.shortnames["output"]
-#         )
-#         self.climate_means = dataset_info.stats.to_list("mean", names).to(self.device)
+        # Step counter, needed to compute spread mean at each epoch.
+        self.add_state("step_count", default=torch.tensor(0.0), dist_reduce_fx="sum")
 
-#         # adding sum of acc coefficient (to compute mean on each epoch)
-#         self.add_state(
-#             "sum_acc",
-#             default=torch.tensor(0.0),
-#             dist_reduce_fx="sum",
-#         )
+    def update(self, preds: NamedTensor, target: NamedTensor, *args):
+        """
+        Assuming a batch contains the members of a same ensemble,
+        compute the spread of batch=members for both target and pred.
+        prediction/target: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
+        called at each end of step
+        """
+        
+        if self.step_count == 0:
+            self.feature_names = preds.feature_names
 
-#         # Step counter, needed to compute psd mean at each epoch.
-#         self.add_state("step_count", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        features = preds.tensor.shape[-1]
 
-#     def update(self, preds: NamedTensor, target: NamedTensor, *args):
-#         """
-#         compute the ACC between target and pred.
-#         prediction/target: (B, pred_steps, N_grid, d_f) or (B, pred_steps, W, H, d_f)
-#         called at each end of step
-#         """
+        # a priori unknown number of spatial dims
+        # but they are all after pred_steps and before features
+        spatial_dims = tuple(preds.spatial_dim_idx)
+        if preds.tensor.shape != target.tensor.shape:
+            raise ValueError("preds and target must have the same shape")
 
-#         if self.step_count == 0 and self.climate_means.device != preds.tensor.device:
-#             self.climate_means = self.climate_means.to(preds.tensor.device)
-#         if self.step_count == 0:
-#             self.feature_names = preds.feature_names
-#             self.pred_steps = preds.tensor.shape[1]
+        # Spread computation
+        self.preds_std += preds.tensor.std(dim=0).mean(dim=spatial_dims)
+        self.target_std += target.tensor.std(dim=0).mean(dim=spatial_dims)
 
-#         features = preds.tensor.shape[-1]
+        # Increment step_count
+        self.step_count += 1
+        
+    def compute(self, prefix: str = "val") -> dict:
+        """
+        Compute spread mean for each channels/features, return a dict.
+        Should be called at each epoch's end
+        """
+        # Compute mean spread over an epoch
+        mean_spread_preds = self.preds_std / self.step_count
+        mean_spread_target = self.target_std / self.step_count
+        feature_names = self.feature_names
 
-#         # a priori unknown number of spatial dims
-#         # but they are all after pred_steps and before features
-#         spatial_dims = tuple(preds.spatial_dim_idx)
-#         if preds.tensor.shape != target.tensor.shape:
-#             raise ValueError("preds and target must have the same shape")
+        # dict {"feature_name" : spread mean}
+        metric_log_dict = {
+            f"{prefix}_spread/{name}_step{j}": mean_spread_preds[j, i]
+            for i, name in enumerate(feature_names)
+            for j in range(self.pred_step)
+        }
 
-#         # ACC computation without m
-#         # https://confluence.ecmwf.int/display/FUG/Section+12.A+Statistical+Concepts+-+Deterministic+Data
-#         num = (
-#             (preds.tensor - self.climate_means) * (target.tensor - self.climate_means)
-#         ).mean(dim=(spatial_dims))
-#         square_denom = ((preds.tensor - self.climate_means) ** 2).mean(
-#             dim=(spatial_dims)
-#         ) * ((target.tensor - self.climate_means) ** 2).mean(dim=(spatial_dims))
-#         # averageing on batch samples
-#         res = torch.mean(num / torch.sqrt(square_denom), dim=0)
+        # Reset metric's state
+        self.reset()
 
-#         # Initialize sum_rmse as a tensor of dim (nb_features)
-#         if not self.sum_acc.ndim:  # self.sum_rmse not yet initalized as a tensor
-#             self.sum_acc = torch.zeros(self.pred_steps, features, device=self.device)
-
-#         # Add acc for this channel
-#         self.sum_acc += res.to(device=self.device)
-
-#         # Increment step_count
-#         self.step_count += 1
-
-#     def compute(self, prefix: str = "val") -> dict:
-#         """
-#         Compute ACC mean for each channels/features, return a dict.
-#         Should be called at each epoch's end
-#         """
-#         # Compute mean RMSE over an epoch
-#         mean_acc = self.sum_acc / self.step_count
-#         feature_names = self.feature_names
-
-#         # dict {"feature_name" : RMSE mean}
-#         metric_log_dict = {
-#             f"{prefix}_acc/{name}_step{j}": mean_acc[j, i]
-#             for i, name in enumerate(feature_names)
-#             for j in range(self.pred_steps)
-#         }
-
-#         # Reset metric's state
-#         self.reset()
-
-#         return metric_log_dict
+        return metric_log_dict
+        

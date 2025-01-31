@@ -1,13 +1,15 @@
+import os
 from pathlib import Path
 
 import yaml
 
-SCRATCH_PATH = Path("/scratch/shared/poesy/poesy_crop")
+#SCRATCH_PATH = Path("/scratch/shared/poesy/poesy_crop")
+SCRATCH_PATH = Path(os.environ.get("PY4CAST_POESY_PATH", "/scratch/shared/Poesy"))
 OROGRAPHY_FNAME = "PEARO_EURW1S40_Orography_crop.npy"
 LATLON_FNAME = "latlon_crop.npy"
 
 # Shape of cropped poesy data (lon x lat x leadtimes x members)
-DATA_SHAPE = (600, 600, 45, 16)
+DATA_SHAPE = (1121, 717, 45, 16)
 
 # Assuming no leap years in dataset (2024 is next)
 SECONDS_IN_YEAR = 365 * 24 * 60 * 60

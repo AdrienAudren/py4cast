@@ -27,7 +27,7 @@ from py4cast.datasets import get_datasets
 from py4cast.datasets.base import DatasetInfo, ItemBatch, NamedTensor, Statics
 from py4cast.io.outputs import GribSavingSettings, save_named_tensors_to_grib
 from py4cast.losses import ScaledLoss, WeightedLoss
-from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDVar
+from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDVar, MetricSpread
 from py4cast.models import build_model_from_settings, get_model_kls_and_settings
 from py4cast.models import registry as model_registry
 from py4cast.plots import (
@@ -298,7 +298,7 @@ class AutoRegressiveLightning(LightningModule):
             self.rmse_psd_plot_metric = MetricPSDVar(pred_step=max_pred_step)
             self.psd_plot_metric = MetricPSDK(self.save_path, pred_step=max_pred_step)
             self.acc_metric = MetricACC(self.dataset_info)
-            self.spread_metric = MetricSpread(self.dataset_info)
+            self.spread_metric = MetricSpread(self.dataset_info, pred_step=max_pred_step)
             self.configure_loggers()
 
     def configure_loggers(self):
