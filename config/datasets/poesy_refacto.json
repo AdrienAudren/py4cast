@@ -27,13 +27,10 @@
     },
     "grid":{
         "name":"EURW1S40_refacto", 
-        "border_size":10, 
-        "subdomain":[50,178,50,178],
-        "proj_name": "LambertConformal",
-        "projection_kwargs": {
-            "central_longitude" : 2,
-            "central_latitude" : 46.7
-        }
+        "border_size":0, 
+        "subdomain":[100, 612, 240, 880],
+        "proj_name": "PlateCarree",
+        "projection_kwargs": {}
     }, 
     "settings":{
         "standardize": true,
