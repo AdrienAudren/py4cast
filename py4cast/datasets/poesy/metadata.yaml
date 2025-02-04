@@ -32,7 +32,7 @@ MEMBERS:
   - 14
   - 15
 WEATHER_PARAMS:
-  t2m:
+  aro_t2m:
     extent: *id001
     grid: EURW1S40
     levels: 2
@@ -40,7 +40,7 @@ WEATHER_PARAMS:
     unit: K
     long_name: PEARO 2-meters temperature
     file_name: t2m
-  u10:
+  aro_u10:
     extent: *id001
     grid: EURW1S40
     levels: 10
@@ -48,7 +48,7 @@ WEATHER_PARAMS:
     unit: m * s**-1
     long_name: PEARO 10-meters U component of wind
     file_name: u
-  v10:
+  aro_v10:
     extent: *id001
     grid: EURW1S40
     levels: 10
@@ -56,7 +56,7 @@ WEATHER_PARAMS:
     unit: m * s**-1
     long_name: PEARO 10-meters V component of wind
     file_name: v
-  tirf:
+  aro_tirf:
     extent: *id001
     grid: EURW1S40
     levels: 0
@@ -64,7 +64,7 @@ WEATHER_PARAMS:
     unit: kg * m**-2
     long_name: PEARO 1-hour integral of rain flux
     file_name: rrdecum
-  tirf_cum:
+  aro_tp:
     extent: *id001
     grid: EURW1S40
     levels: 0
@@ -72,7 +72,7 @@ WEATHER_PARAMS:
     unit: kg * m**-2
     long_name: PEARO total integral of rain flux
     file_name: rr
-  t_850:
+  aro_t:
     extent: *id001
     grid: EURW1S40
     levels: 850
@@ -80,7 +80,7 @@ WEATHER_PARAMS:
     unit: K
     long_name: PEARO 850 hPa temperature
     file_name: t850
-  z_500:
+  aro_z:
     extent: *id001
     grid: EURW1S40
     levels: 500

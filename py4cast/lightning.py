@@ -181,6 +181,7 @@ class AutoRegressiveLightning(LightningModule):
         self.dataset_conf = dataset_conf
         self.dataset_info = dataset_info
         self.batch_size = batch_size
+        self.ensemble_metrics = ensemble_metrics
         self.model_conf = model_conf
         self.model_name = model_name
         self.num_input_steps = num_input_steps
@@ -298,7 +299,7 @@ class AutoRegressiveLightning(LightningModule):
             self.rmse_psd_plot_metric = MetricPSDVar(pred_step=max_pred_step)
             self.psd_plot_metric = MetricPSDK(self.save_path, pred_step=max_pred_step)
             self.acc_metric = MetricACC(self.dataset_info)
-            self.spread_metric = MetricSpread(self.dataset_info, pred_step=max_pred_step)
+            self.spread_metric = MetricSpread(self.dataset_info, pred_step=max_pred_step+1)
             self.configure_loggers()
 
     def configure_loggers(self):
@@ -872,6 +873,7 @@ class AutoRegressiveLightning(LightningModule):
             dict_metrics.update(self.psd_plot_metric.compute(prefix="test"))
             dict_metrics.update(self.rmse_psd_plot_metric.compute(prefix="test"))
             dict_metrics.update(self.acc_metric.compute(prefix="test"))
+            dict_metrics.update(self.spread_metric.compute(prefix="test"))
 
             for name, elmnt in dict_metrics.items():
                 if isinstance(elmnt, matplotlib.figure.Figure):

@@ -37,7 +37,7 @@ class PoesyAccessor(DataAccessor):
         level: float,
         level_type: Literal["isobaricInhPa", "heightAboveGround", "surface", "meanSea"],
     ) -> float:
-        if level_type == "isobaricInHpa":
+        if level_type == "isobaricInhPa":
             return 1.0 + (level) / (90)
         elif level_type == "heightAboveGround":
             return 2.0
@@ -122,6 +122,17 @@ class PoesyAccessor(DataAccessor):
         if not filepath.exists():
             return False
         return True
+
+    @staticmethod
+    def parameter_namer(param: WeatherParam) -> str:
+        """
+        Retrieve a filename from a parameter
+        """
+        if param.level_type in ["surface", "heightAboveGround"]:
+            level_type = "m"
+        else:
+            level_type = "hpa"
+        return f"{param.name}_{param.level}{level_type}"
 
     @staticmethod
     def optional_check_before_exists(

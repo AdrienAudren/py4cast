@@ -444,8 +444,8 @@ class MetricSpread(Metric):
         super().__init__()
         self.pred_step = pred_step 
         
-        self.add_state("preds_std", default=torch.zeros((self.pred_step)), dist_reduce_fx="sum")
-        self.add_state("target_std", default=torch.zeros((self.pred_step)), dist_reduce_fx="sum")
+        self.add_state("preds_std", default=torch.zeros((self.pred_step, dataset_info.weather_dim)), dist_reduce_fx="sum")
+        self.add_state("target_std", default=torch.zeros((self.pred_step, dataset_info.weather_dim)), dist_reduce_fx="sum")
         # dist_reduce_fx="sum" because step_count is also summed accross processes
 
         # Step counter, needed to compute spread mean at each epoch.
@@ -462,8 +462,6 @@ class MetricSpread(Metric):
         if self.step_count == 0:
             self.feature_names = preds.feature_names
 
-        features = preds.tensor.shape[-1]
-
         # a priori unknown number of spatial dims
         # but they are all after pred_steps and before features
         spatial_dims = tuple(preds.spatial_dim_idx)
@@ -471,8 +469,8 @@ class MetricSpread(Metric):
             raise ValueError("preds and target must have the same shape")
 
         # Spread computation
-        self.preds_std += preds.tensor.std(dim=0).mean(dim=spatial_dims)
-        self.target_std += target.tensor.std(dim=0).mean(dim=spatial_dims)
+        self.preds_std += preds.tensor.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in spatial_dims]))
+        self.target_std += target.tensor.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in spatial_dims]))
 
         # Increment step_count
         self.step_count += 1
@@ -489,7 +487,7 @@ class MetricSpread(Metric):
 
         # dict {"feature_name" : spread mean}
         metric_log_dict = {
-            f"{prefix}_spread/{name}_step{j}": mean_spread_preds[j, i]
+            f"{prefix}_spread/{name}_step{j}": mean_spread_target[j, i]
             for i, name in enumerate(feature_names)
             for j in range(self.pred_step)
         }

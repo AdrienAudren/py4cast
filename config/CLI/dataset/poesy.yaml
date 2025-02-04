@@ -3,8 +3,8 @@ data:
   dataset_name: "poesy"
   num_input_steps: 1
   num_pred_steps_train: 1
-  num_pred_steps_val_test: 3
-  batch_size: 1
+  num_pred_steps_val_test: 44
+  batch_size: 8
 
   #other args
   num_workers: 10
@@ -12,4 +12,4 @@ data:
   pin_memory: False 
   dataset_conf: "/home/mluser/py4cast/config/datasets/poesy_refacto.json"
   predict_conf: null
-  ensemble_metrics: False
+  ensemble_metrics: True

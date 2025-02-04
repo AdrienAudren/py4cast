@@ -2,7 +2,7 @@
     "periods": {
         "train": {
             "start": 20200615,
-            "end": 20210615,
+            "end": 20200616,
             "refcst_daily_runs": [75600],
             "refcst_leadtime_start_in_sec": 3600,
             "refcst_leadtime_end_in_sec": 162000,
@@ -10,7 +10,7 @@
         },
         "test": {
             "start": 20210616,
-            "end": 20210716,
+            "end": 20210617,
             "refcst_daily_runs": [75600],
             "refcst_leadtime_start_in_sec": 3600,
             "refcst_leadtime_end_in_sec": 162000,
@@ -37,10 +37,30 @@
         "file_format": "npy"
     },
     "params": {
-        "t2m" : {"kind" : "input_output", "levels" : [2]},
-        "u10" : {"kind" : "input_output", "levels" : [10]},
-        "v10" : {"kind" : "input_output", "levels" : [10]},
-        "tirf": {"kind" : "input_output", "levels" : [0]}
+        "aro_t2m": {
+            "levels": [2],
+            "kind": "input_output"
+        },
+        "aro_u10": {
+            "levels": [10],
+            "kind": "input_output"
+        },
+        "aro_v10": {
+            "levels": [10],
+            "kind": "input_output"
+        },
+        "aro_tp": {
+            "levels": [0],
+            "kind": "input_output"
+        },
+        "aro_t": {
+            "levels": [850],
+            "kind": "input_output"
+        },
+        "aro_z": {
+            "levels": [500],
+            "kind": "input_output"
+        }
     },
-    "members": [0,1,2,3,4,5,6,7,8]
+    "members": [0,1,2,3,4,5,6,7]
 }
