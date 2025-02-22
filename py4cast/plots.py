@@ -496,6 +496,8 @@ class StateErrorPlot(Plotter):
         self.save_path = save_path
         for metric in self.metrics:
             self.losses[metric] = []
+        self.count=1
+        self.epoch_dict_loss = {}
 
     def update(
         self,
@@ -507,11 +509,23 @@ class StateErrorPlot(Plotter):
         Compute the metric. Append to a dictionnary
         """
         for name in self.metrics:
-            self.losses[name].append(
-                obj.trainer.strategy.reduce(
-                    self.metrics[name](prediction, target), reduce_op="mean"
-                ).cpu()
-            )
+
+            if name == "std":
+                if not self.initialized:
+                    self.metrics[name].update(prediction, target)
+                    self.epoch_dict_loss = self.metrics[name].compute(prefix="test")
+                else:
+                    self.metrics[name].update(prediction, target)
+                    dict_loss = self.metrics[name].compute(prefix="test")
+                    for key, value in dict_loss.items():
+                        self.epoch_dict_loss[key] += value
+                    self.count+=1
+            else:
+                self.losses[name].append(
+                    obj.trainer.strategy.reduce(
+                        self.metrics[name](prediction, target), reduce_op="mean"
+                    ).cpu()
+                )
         if not self.initialized:
             self.shortnames = prediction.feature_names
             self.units = [
@@ -525,51 +539,63 @@ class StateErrorPlot(Plotter):
         """
         tensorboard = obj.logger.experiment
         if obj.trainer.is_global_zero:
-            for name in self.metrics:
-                loss_tensor = torch.cat(self.losses[name], dim=0)
-                loss = torch.mean(loss_tensor, dim=0)
+            for name in self.metrics: 
 
-                # Log metrics in tensorboard, with x axis as forecast timestep
-                loss_dict = {self.shortnames[k]: [] for k in range(loss.shape[1])}
-                for t in range(loss.shape[0]):
-                    for k in range(loss.shape[1]):
-                        scalar_name = f"{label}_{name}/timestep_{self.shortnames[k]}"
-                        tensorboard.add_scalar(scalar_name, loss[t][k], t + 1)
-                        loss_dict[self.shortnames[k]].append(loss[t][k].item())
+                if name == "std":
+                    for key, value in self.epoch_dict_loss.items():
+                        self.epoch_dict_loss[key] /= self.count
 
-                # Plot the score card
-                if not obj.trainer.sanity_checking:
-                    fig = plot_error_map(
-                        loss,
-                        self.shortnames,
-                        self.units,
-                        step_duration=obj.dataset_info.pred_step,
-                    )
+                    # Log metrics in tensorboard, with x axis as forecast timestep
+                    for t in range(loss.shape[0]):
+                        for k in range(loss.shape[1]):
+                            scalar_name = f"{label}_{name}/timestep_{self.shortnames[k]}"
+                            values = {legend: array[t][k] for legend, array in self.epoch_dict_loss.items()}
+                            tensorboard.add_scalars(scalar_name, values, t + 1)
+                else:
+                    loss_tensor = torch.cat(self.losses[name], dim=0)
+                    loss = torch.mean(loss_tensor, dim=0)
 
-                    # log it in tensorboard
-                    fig_name = f"score_cards/{self.prefix}_{name}"
-                    tensorboard.add_figure(fig_name, fig, obj.current_epoch)
-                    fig_full_name = f"{fig_name}.png"
-                    if self.save_path is not None:
-                        dest_file = self.save_path / fig_full_name
-                        dest_file.parent.mkdir(exist_ok=True)
-                        fig.savefig(dest_file)
+                    # Log metrics in tensorboard, with x axis as forecast timestep
+                    loss_dict = {self.shortnames[k]: [] for k in range(loss.shape[1])}
+                    for t in range(loss.shape[0]):
+                        for k in range(loss.shape[1]):
+                            scalar_name = f"{label}_{name}/timestep_{self.shortnames[k]}"
+                            tensorboard.add_scalar(scalar_name, loss[t][k], t + 1)
+                            loss_dict[self.shortnames[k]].append(loss[t][k].item())
 
-                    if obj.mlflow_logger:
-                        run_id = obj.mlflow_logger.version
-                        obj.mlflow_logger.experiment.log_figure(
-                            run_id=run_id,
-                            figure=fig,
-                            artifact_file=f"figures/{fig_full_name}",
+                    # Plot the score card
+                    if not obj.trainer.sanity_checking:
+                        fig = plot_error_map(
+                            loss,
+                            self.shortnames,
+                            self.units,
+                            step_duration=obj.dataset_info.pred_step,
                         )
-                    plt.close(fig)
 
-                    if self.save_path is not None:
-                        # Save metrics in json file
-                        with open(
-                            self.save_path / f"{label}_{name}_scores.json", "w"
-                        ) as json_file:
-                            json.dump(loss_dict, json_file)
+                        # log it in tensorboard
+                        fig_name = f"score_cards/{self.prefix}_{name}"
+                        tensorboard.add_figure(fig_name, fig, obj.current_epoch)
+                        fig_full_name = f"{fig_name}.png"
+                        if self.save_path is not None:
+                            dest_file = self.save_path / fig_full_name
+                            dest_file.parent.mkdir(exist_ok=True)
+                            fig.savefig(dest_file)
+
+                        if obj.mlflow_logger:
+                            run_id = obj.mlflow_logger.version
+                            obj.mlflow_logger.experiment.log_figure(
+                                run_id=run_id,
+                                figure=fig,
+                                artifact_file=f"figures/{fig_full_name}",
+                            )
+                        plt.close(fig)
+
+                        if self.save_path is not None:
+                            # Save metrics in json file
+                            with open(
+                                self.save_path / f"{label}_{name}_scores.json", "w"
+                            ) as json_file:
+                                json.dump(loss_dict, json_file)
             # Free memory
             [self.losses[name].clear() for name in self.metrics]
 

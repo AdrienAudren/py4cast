@@ -250,7 +250,7 @@ def generate_forcings(
             ],
             tensor=solar_forcing,
             names=["timestep", "lat", "lon", "features"],
-        ),
+        )
     ]
 
     return lforcings
@@ -336,7 +336,7 @@ def get_param_list(
     accessor: DataAccessor,
 ) -> List[WeatherParam]:
     param_list = []
-    for name, values in conf["params"].items():
+    for name, values in conf["params"].items():  
         for lvl in values["levels"]:
             param = WeatherParam(
                 name=name,
@@ -432,6 +432,7 @@ class Sample:
             means = np.asarray(self.stats[name]["mean"])
             std = np.asarray(self.stats[name]["std"])
             arr = (arr - means) / std
+
         return torch.from_numpy(arr)
 
     def load(self, no_standardize: bool = False) -> Item:
@@ -487,6 +488,15 @@ class Sample:
             timedeltas=self.output_timestamps.timedeltas,
             grid=self.grid,
         )
+        if self.settings.noise_members > 0:
+            # Inject gaussian noise as forcing
+            external_forcings.append(
+                NamedTensor(
+                    feature_names=["noise"],
+                    tensor=torch.randn_like(external_forcings[0].tensor),
+                    names=["timestep", "lat", "lon", "features"],
+                )
+            )
 
         for forcing in external_forcings:
             forcing.unsqueeze_and_expand_from_(linputs[0])
@@ -685,15 +695,20 @@ class DatasetABC(Dataset):
                     member,
                 )
                 if sample.is_valid():
-                    samples.append(sample)
+                    # replicate samples to match the number of noise members
+                    if self.settings.noise_members > 0:
+                        for k in range(self.settings.noise_members):
+                            samples.append(sample)
+                    else:
+                        samples.append(sample)
                 else:
                     invalid_samples += 1
         print(
             f"--> {len(samples)} {self.period.name} samples are now defined, with {invalid_samples} invalid samples."
         )
         ##########
-        for sample in samples:
-            print(sample.member)
+        # for sample in samples:
+        #     print(sample.member)
         ##########
         return samples
 
@@ -705,6 +720,7 @@ class DatasetABC(Dataset):
         prefetch_factor: Union[int, None] = None,
         pin_memory: bool = False,
         persistent_workers: bool = True,
+        drop_last: bool = False,
     ) -> DataLoader:
         """
         Builds a torch dataloader from self.
@@ -717,6 +733,7 @@ class DatasetABC(Dataset):
             prefetch_factor=prefetch_factor,
             collate_fn=collate_fn,
             pin_memory=pin_memory,
+            drop_last=drop_last,
         )
 
     @cached_property
@@ -726,6 +743,7 @@ class DatasetABC(Dataset):
         """
         res = 4  # For date
         res += 1  # For solar forcing
+        res += 1 if self.settings.noise_members > 0 else 0
 
         for param in self.params:
             if param.kind == "input":
@@ -846,6 +864,7 @@ class DatasetABC(Dataset):
         num_input_steps: int,
         num_pred_steps_train: int,
         num_pred_steps_val_test: int,
+        noise_members: int,
     ) -> Tuple[Type["DatasetABC"], Type["DatasetABC"], Type["DatasetABC"]]:
         grid = Grid(load_grid_info_func=accessor_kls.load_grid_info, **conf["grid"])
 
@@ -861,6 +880,7 @@ class DatasetABC(Dataset):
             num_input_steps=num_input_steps,
             num_pred_steps=num_pred_steps_train,
             members=members,
+            noise_members=noise_members,
             **conf["settings"],
         )
         train_period = Period(**conf["periods"]["train"], name="train")
@@ -873,6 +893,7 @@ class DatasetABC(Dataset):
             num_input_steps=num_input_steps,
             num_pred_steps=num_pred_steps_val_test,
             members=members,
+            noise_members=noise_members,
             **conf["settings"],
         )
         valid_period = Period(**conf["periods"]["valid"], name="valid")
@@ -895,6 +916,7 @@ class DatasetABC(Dataset):
         num_input_steps: int,
         num_pred_steps_train: int,
         num_pred_steps_val_tests: int,
+        noise_members: int,
         config_override: Union[Dict, None] = None,
     ) -> Tuple[Type["DatasetABC"], Type["DatasetABC"], Type["DatasetABC"]]:
         """
@@ -915,4 +937,5 @@ class DatasetABC(Dataset):
             num_input_steps,
             num_pred_steps_train,
             num_pred_steps_val_tests,
+            noise_members,
         )

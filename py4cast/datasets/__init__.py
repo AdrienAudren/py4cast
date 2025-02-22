@@ -21,7 +21,7 @@ try:
 
     registry["titan"] = (
         TitanAccessor,
-        DEFAULT_CONFIG_DIR / "datasets" / "titan_refacto.json",
+        DEFAULT_CONFIG_DIR / "datasets" / "titan_full.json",
     )
 
 except (ImportError, FileNotFoundError, ModuleNotFoundError):
@@ -64,6 +64,7 @@ def get_datasets(
     num_input_steps: int,
     num_pred_steps_train: int,
     num_pred_steps_val_test: int,
+    noise_members: int,
     config_file: Union[str, None] = None,
     config_override: Union[Dict, None] = None,
 ) -> Tuple[DatasetABC, DatasetABC, DatasetABC]:
@@ -96,4 +97,5 @@ def get_datasets(
         num_pred_steps_train,
         num_pred_steps_val_test,
         config_override,
+        noise_members,
     )

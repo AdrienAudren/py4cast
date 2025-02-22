@@ -60,6 +60,7 @@ class PlDataModule(LightningDataModule):
         dataset_conf: Path | None = None,
         predict_conf: Dict | None = None,
         ensemble_metrics: bool = False,
+        noise_members: int = 0,
     ):
         super().__init__()
         self.num_input_steps = num_input_steps
@@ -78,6 +79,7 @@ class PlDataModule(LightningDataModule):
             num_pred_steps_val_test,
             dataset_conf,
             predict_conf,
+            noise_members,
         )
 
     @property
@@ -125,6 +127,7 @@ class PlDataModule(LightningDataModule):
             shuffle=False,
             prefetch_factor=self.prefetch_factor,
             pin_memory=self.pin_memory,
+            drop_last=True,
         )
 
     def predict_dataloader(self):
@@ -165,7 +168,7 @@ class AutoRegressiveLightning(LightningModule):
         # non-linked args
         model_name: Literal[tuple(model_registry.keys())] = "HalfUNet",
         model_conf: Path | None = None,
-        loss_name: Literal["mse", "mae"] = "mse",
+        loss_name: Literal["mse", "mae", "afcrps"] = "mse",
         num_inter_steps: int = 1,
         num_samples_to_plot: int = 1,
         training_strategy: Literal["diff_ar", "scaled_ar"] = "diff_ar",
@@ -285,6 +288,8 @@ class AutoRegressiveLightning(LightningModule):
             self.loss = WeightedLoss("MSELoss", reduction="none")
         elif loss_name == "mae":
             self.loss = WeightedLoss("L1Loss", reduction="none")
+        elif loss_name == "afcrps":
+            self.loss = WeightedLoss("AFCRPS", reduction="none")
         else:
             raise TypeError(f"Unknown loss function: {loss_name}")
         self.loss.prepare(self, statics.interior_mask, dataset_info)
@@ -823,6 +828,9 @@ class AutoRegressiveLightning(LightningModule):
                 loss.prepare(self, self.interior_mask, self.dataset_info)
                 metrics[alias] = loss
 
+            if self.ensemble_metrics:
+                metrics["std"] = self.spread_metric
+
             self.test_plotters = [
                 StateErrorPlot(metrics, save_path=self.save_path),
                 SpatialErrorPlot(),
@@ -849,9 +857,6 @@ class AutoRegressiveLightning(LightningModule):
             self.psd_plot_metric.update(prediction, target, self.original_shape)
             self.rmse_psd_plot_metric.update(prediction, target, self.original_shape)
 
-            if self.ensemble_metrics:
-                self.spread_metric.update(prediction, target)
-
     @cached_property
     def interior_2d(self) -> torch.Tensor:
         """
@@ -873,7 +878,6 @@ class AutoRegressiveLightning(LightningModule):
             dict_metrics.update(self.psd_plot_metric.compute(prefix="test"))
             dict_metrics.update(self.rmse_psd_plot_metric.compute(prefix="test"))
             dict_metrics.update(self.acc_metric.compute(prefix="test"))
-            dict_metrics.update(self.spread_metric.compute(prefix="test"))
 
             for name, elmnt in dict_metrics.items():
                 if isinstance(elmnt, matplotlib.figure.Figure):

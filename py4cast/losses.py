@@ -12,6 +12,46 @@ from torch.nn import MSELoss
 
 from py4cast.datasets.base import DatasetInfo, NamedTensor
 
+class AlmostFairCRPS(torch.nn.Module):
+    def __init__(self, alpha=0.99):
+        super().__init__()
+        self.alpha = alpha
+    
+    def forward(self, preds, targets):
+        """
+        Compute almost fair CRPS (afCRPS) for ensemble forecasts.
+        
+        Args:
+            preds (torch.Tensor): Predictions of shape (B=members, pred_steps, W, H, d_f)
+            targets (torch.Tensor): Targets of shape (pred_steps, W, H, d_f)
+        
+        Returns:
+            torch.Tensor: Computed afCRPS value.
+        """
+        M = preds.shape[0]  # Number of ensemble members
+        
+        # Expand target dimensions to match preds for broadcasting
+        targets = targets.unsqueeze(0)  # Shape: (1, pred_steps, W, H, d_f)
+        
+        # Compute |x_j - y| term
+        abs_diff_target = torch.abs(preds - targets).mean(dim=0)  # Shape: (pred_steps, W, H, d_f)
+        
+        # Compute |x_j - x_k| term
+        preds_exp = preds.unsqueeze(0)  # Shape: (1, M, pred_steps, W, H, d_f)
+        preds_comp = preds.unsqueeze(1)  # Shape: (M, 1, pred_steps, W, H, d_f)
+        pairwise_abs_diff = torch.abs(preds_exp - preds_comp)  # Shape: (M, M, pred_steps, W, H, d_f)
+        
+        # Exclude self-comparisons by masking diagonal elements
+        pairwise_sum = pairwise_abs_diff.sum(dim=(0, 1))  # Sum over both member axes Shape: (pred_steps, W, H, d_f)
+        
+        # Compute epsilon (ϵ)
+        epsilon = (1 - self.alpha) / M
+        
+        # Compute afCRPS
+        afcrps = abs_diff_target - ((1 - epsilon) / (2 * M * (M - 1))) * pairwise_sum # Shape: (pred_steps, W, H, d_f)
+        
+        return afcrps
+
 
 class Py4CastLoss(ABC):
     """
@@ -21,7 +61,12 @@ class Py4CastLoss(ABC):
     """
 
     def __init__(self, loss: str, *args, **kwargs) -> None:
-        self.loss = getattr(torch.nn, loss)(*args, **kwargs)
+        if loss in ["MSELoss", "L1Loss"]:
+            self.loss = getattr(torch.nn, loss)(*args, **kwargs)
+        elif loss == "AFCRPS":
+            self.loss = AlmostFairCRPS()
+        else:
+            raise ValueError("Unrecognized loss function")
 
     @abstractmethod
     def prepare(
@@ -181,3 +226,5 @@ class ScaledLoss(Py4CastLoss):
         return mean_loss * self.weights(
             tuple(prediction.feature_names), prediction.device
         )
+
+

@@ -4,16 +4,10 @@ data:
   num_input_steps: 1
   num_pred_steps_train: 1
   num_pred_steps_val_test: 1
-  batch_size: 7
-
+  batch_size: 4
+  noise_members: 4
   #other args
-  num_workers: 14
+  num_workers: 8
   prefetch_factor: null
   pin_memory: False 
-  dataset_conf: config/datasets/titan_full.json
-  predict_conf:
-    periods:
-      test:
-        start: 20220101
-        end: 20230101
-        obs_step: 3600
+  #dataset_conf: config/datasets/titan_full.json

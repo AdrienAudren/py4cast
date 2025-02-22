@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH -p milan7513_A100
 #SBATCH --gres gpu:A100:2
-#SBATCH -N 1
+#SBATCH -N 2
 #SBATCH --ntasks-per-node=2
-#SBATCH --cpus-per-task=14
+#SBATCH --cpus-per-task=8
 ##SBATCH --time=120:00:00
-#SBATCH --job-name=py4cast_unetrpp
+#SBATCH --job-name=py4cast_unetrpp_crps
 #SBATCH --exclusive
-#SBATCH -w pise35
+##SBATCH -w pise35
 
 # export WORKDIR="/home_nfs/audrena/py4cast"
 export WORKDIR=$(pwd)

@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from scipy.fftpack import dct
 from torchmetrics import Metric
-
+from torchmetrics.utilities import dim_zero_cat
 from py4cast.datasets.base import DatasetInfo, NamedTensor
 from py4cast.plots import plot_log_psd
 
@@ -435,6 +435,63 @@ class MetricACC(Metric):
 
         return metric_log_dict
 
+# class MetricSpread(Metric):
+#     """
+#     Compute the spatially averaged, per pred step members spread for both the target (PE-AROME) and the prediction
+#     """
+
+#     def __init__(self, dataset_info: DatasetInfo, pred_step: int = 0):
+#         super().__init__()
+#         self.pred_step = pred_step 
+        
+#         self.add_state("preds_std", default=torch.zeros((self.pred_step, dataset_info.weather_dim)), dist_reduce_fx="sum")
+#         self.add_state("target_std", default=torch.zeros((self.pred_step, dataset_info.weather_dim)), dist_reduce_fx="sum")
+#         # dist_reduce_fx="sum" because step_count is also summed accross processes
+
+#         # Step counter, needed to compute spread mean at each epoch.
+#         self.add_state("step_count", default=torch.tensor(0.0), dist_reduce_fx="sum")
+
+#         self.dataset_name = dataset_info.name
+
+#     def update(self, preds: NamedTensor, target: NamedTensor, *args):
+#         """
+#         Assuming a batch contains the members of a same ensemble,
+#         compute the spread of batch=members for both target and pred.
+#         prediction/target: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
+#         called at each end of step
+#         """
+        
+#         if self.step_count == 0:
+#             self.feature_names = preds.feature_names
+
+#         # a priori unknown number of spatial dims
+#         # but they are all after pred_steps and before features
+#         spatial_dims = tuple(preds.spatial_dim_idx)
+#         if preds.tensor.shape != target.tensor.shape:
+#             raise ValueError("preds and target must have the same shape")
+
+#         # Spread computation
+#         self.preds_std += preds.tensor.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in spatial_dims]))
+#         self.target_std += target.tensor.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in spatial_dims]))
+
+#         # Increment step_count
+#         self.step_count += 1
+        
+#     def compute(self, prefix: str = "val") -> dict:
+#         """
+#         Compute spread mean for each channels/features, return a dict.
+#         Should be called at each epoch's end
+#         """
+#         # Compute mean spread over an epoch
+#         mean_spread_preds = self.preds_std / self.step_count
+#         mean_spread_target = self.target_std / self.step_count
+#         # Reset metric's state
+#         self.reset()
+
+#         return {"preds": mean_spread_preds,
+#                 f"{self.dataset_name}": mean_spread_target,
+#                 }
+        
 class MetricSpread(Metric):
     """
     Compute the spatially averaged, per pred step members spread for both the target (PE-AROME) and the prediction
@@ -444,56 +501,109 @@ class MetricSpread(Metric):
         super().__init__()
         self.pred_step = pred_step 
         
-        self.add_state("preds_std", default=torch.zeros((self.pred_step, dataset_info.weather_dim)), dist_reduce_fx="sum")
-        self.add_state("target_std", default=torch.zeros((self.pred_step, dataset_info.weather_dim)), dist_reduce_fx="sum")
-        # dist_reduce_fx="sum" because step_count is also summed accross processes
+        self.add_state("preds", default=[], dist_reduce_fx="cat")
+        self.add_state("targets", default=[], dist_reduce_fx="cat")
+        # dist_reduce_fx="cat" because we gather multiple batch before computing std
 
-        # Step counter, needed to compute spread mean at each epoch.
-        self.add_state("step_count", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.dataset_name = dataset_info.name
 
-    def update(self, preds: NamedTensor, target: NamedTensor, *args):
+    def update(self, pred: NamedTensor, target: NamedTensor, *args):
         """
         Assuming a batch contains the members of a same ensemble,
         compute the spread of batch=members for both target and pred.
         prediction/target: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
         called at each end of step
         """
-        
-        if self.step_count == 0:
-            self.feature_names = preds.feature_names
 
         # a priori unknown number of spatial dims
         # but they are all after pred_steps and before features
-        spatial_dims = tuple(preds.spatial_dim_idx)
-        if preds.tensor.shape != target.tensor.shape:
+        self.spatial_dims = tuple(pred.spatial_dim_idx)
+        if pred.tensor.shape != target.tensor.shape:
             raise ValueError("preds and target must have the same shape")
 
-        # Spread computation
-        self.preds_std += preds.tensor.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in spatial_dims]))
-        self.target_std += target.tensor.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in spatial_dims]))
-
-        # Increment step_count
-        self.step_count += 1
+        self.preds.append(pred.tensor)
+        self.targets.append(target.tensor)
         
     def compute(self, prefix: str = "val") -> dict:
         """
         Compute spread mean for each channels/features, return a dict.
         Should be called at each epoch's end
         """
-        # Compute mean spread over an epoch
-        mean_spread_preds = self.preds_std / self.step_count
-        mean_spread_target = self.target_std / self.step_count
-        feature_names = self.feature_names
-
-        # dict {"feature_name" : spread mean}
-        metric_log_dict = {
-            f"{prefix}_spread/{name}_step{j}": mean_spread_target[j, i]
-            for i, name in enumerate(feature_names)
-            for j in range(self.pred_step)
-        }
-
-        # Reset metric's state
+        # Ensure concatenating into a single tensor along device dimension
+        preds = dim_zero_cat(self.preds)
+        targets = dim_zero_cat(self.targets)
+        # Spread computation
+        preds_std = preds.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in self.spatial_dims]))
+        targets_std = targets.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in self.spatial_dims]))
+        # Reconvert to initial type then reset metric's state
+        self.preds = []
+        self.targets = []
         self.reset()
 
-        return metric_log_dict
+        return {"preds": preds_std,
+                f"{self.dataset_name}": targets_std,
+                }
+
+# class MetricSpread(Metric):
+#     """
+#     Compute the spatially averaged, per pred step members spread for both the target (PE-AROME) and the prediction
+#     """
+
+#     def __init__(self, dataset_info: DatasetInfo, pred_step: int = 0):
+#         super().__init__()
+#         self.pred_step = pred_step 
         
+#         self.add_state("preds_sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
+#         self.add_state("target_sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
+
+#         self.add_state("preds_sum2", default=torch.tensor(0.0), dist_reduce_fx="sum")
+#         self.add_state("target_sum2", default=torch.tensor(0.0), dist_reduce_fx="sum")
+
+#         # Step counter, needed to compute spread mean at each epoch.
+#         self.add_state("count", default=torch.tensor(0.0), dist_reduce_fx="sum")
+
+#         self.dataset_name = dataset_info.name
+
+#     def update(self, preds: NamedTensor, target: NamedTensor, *args):
+#         """
+#         Assuming a batch contains the members of a same ensemble,
+#         compute the spread of batch=members for both target and pred.
+#         prediction/target: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
+#         called at each end of step
+#         """
+        
+#         if self.step_count == 0:
+#             self.feature_names = preds.feature_names
+
+#         # a priori unknown number of spatial dims
+#         # but they are all after pred_steps and before features
+#         spatial_dims = tuple(preds.spatial_dim_idx)
+#         if preds.tensor.shape != target.tensor.shape:
+#             raise ValueError("preds and target must have the same shape")
+        
+
+#         # Aggregate statistics
+#         self.preds_sum += preds.sum(dim=0)
+#         self.target_sum += target.sum(dim=0)
+
+#         self.preds_sum2 += (preds**2).sum(dim=0)
+#         self.target_sum2 += (target**2).sum(dim=0)
+
+#         self.count += local_count
+        
+#     def compute(self, prefix: str = "val") -> dict:
+#         """
+#         Compute spread mean for each channels/features, return a dict.
+#         Should be called at each epoch's end
+#         """
+#         # Compute mean spread over an epoch
+#         preds_s2 = (self.preds_sum2 - self.preds_sum**2/self.count) / self.count
+#         target_s2 = (self.target_sum2 - self.target_sum**2/self.count) / self.count
+#         mean_spread_preds = torch.sqrt(s2)
+#         mean_spread_target = torch.sqrt(target_s2)
+#         # Reset metric's state
+#         self.reset()
+
+#         return {"preds": mean_spread_preds,
+#                 f"{self.dataset_name}": mean_spread_target,
+#                 }

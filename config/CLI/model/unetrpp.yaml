@@ -1,7 +1,7 @@
 model:
   model_name: UNETRPP
   model_conf: null # Path to model_conf
-  loss_name: mse # mse or mae
+  loss_name: afcrps # mse or mae
   num_inter_steps: 1 # Number of intermediary steps (without any data)
   num_samples_to_plot: 1
   training_strategy: scaled_ar # diff_ar or 
