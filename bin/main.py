@@ -56,6 +56,14 @@ class Py4castLightningCLI(LightningCLI):
             "model.ensemble_metrics",
         )
         parser.link_arguments(
+            "data.noise_members",
+            "model.noise_members",
+        )
+        parser.link_arguments(
+            "data.features_to_plot",
+            "model.features_to_plot",
+        )
+        parser.link_arguments(
             "data.train_dataset_info",
             "model.dataset_info",
             apply_on="instantiate",

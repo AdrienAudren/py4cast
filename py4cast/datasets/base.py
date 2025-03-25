@@ -489,11 +489,10 @@ class Sample:
             grid=self.grid,
         )
         if self.settings.noise_members > 0:
-            # Inject gaussian noise as forcing
             external_forcings.append(
                 NamedTensor(
                     feature_names=["noise"],
-                    tensor=torch.randn_like(external_forcings[0].tensor),
+                    tensor=torch.randn_like(external_forcings[-1].tensor),
                     names=["timestep", "lat", "lon", "features"],
                 )
             )

@@ -13,7 +13,7 @@ from torch.nn import MSELoss
 from py4cast.datasets.base import DatasetInfo, NamedTensor
 
 class AlmostFairCRPS(torch.nn.Module):
-    def __init__(self, alpha=0.99):
+    def __init__(self, alpha=0.95):
         super().__init__()
         self.alpha = alpha
     
@@ -29,10 +29,13 @@ class AlmostFairCRPS(torch.nn.Module):
             torch.Tensor: Computed afCRPS value.
         """
         M = preds.shape[0]  # Number of ensemble members
-        
+        # print shape of target and preds
+        # breakpoint()
+        # print(f"preds shape: {preds.shape}")
+        # print(f"targets shape: {targets.shape}")
         # Expand target dimensions to match preds for broadcasting
-        targets = targets.unsqueeze(0)  # Shape: (1, pred_steps, W, H, d_f)
-        
+        #targets = targets.unsqueeze(0)  # Shape: (1, pred_steps, W, H, d_f)
+        targets = targets.mean(dim=0).unsqueeze(0)  # Shape: (1, pred_steps, W, H, d_f)
         # Compute |x_j - y| term
         abs_diff_target = torch.abs(preds - targets).mean(dim=0)  # Shape: (pred_steps, W, H, d_f)
         
@@ -49,8 +52,10 @@ class AlmostFairCRPS(torch.nn.Module):
         
         # Compute afCRPS
         afcrps = abs_diff_target - ((1 - epsilon) / (2 * M * (M - 1))) * pairwise_sum # Shape: (pred_steps, W, H, d_f)
+        # breakpoint()
+        # print(f"afcrps shape: {afcrps.shape}")
         
-        return afcrps
+        return afcrps.unsqueeze(0)  # Shape: (1, pred_steps, W, H, d_f)
 
 
 class Py4CastLoss(ABC):

@@ -27,16 +27,19 @@ from py4cast.datasets import get_datasets
 from py4cast.datasets.base import DatasetInfo, ItemBatch, NamedTensor, Statics
 from py4cast.io.outputs import GribSavingSettings, save_named_tensors_to_grib
 from py4cast.losses import ScaledLoss, WeightedLoss
-from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDVar, MetricSpread
+from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDVar, MetricSpread, MetricMapSpread
 from py4cast.models import build_model_from_settings, get_model_kls_and_settings
 from py4cast.models import registry as model_registry
 from py4cast.plots import (
     PredictionEpochPlot,
     PredictionTimestepPlot,
+    SpreadTimestepPlot,
     SpatialErrorPlot,
     StateErrorPlot,
 )
 from py4cast.utils import str_to_dtype
+
+import numpy as np
 
 PLOT_PERIOD: int = 10
 
@@ -61,6 +64,7 @@ class PlDataModule(LightningDataModule):
         predict_conf: Dict | None = None,
         ensemble_metrics: bool = False,
         noise_members: int = 0,
+        features_to_plot: List[str] = ["t2m"],
     ):
         super().__init__()
         self.num_input_steps = num_input_steps
@@ -70,6 +74,10 @@ class PlDataModule(LightningDataModule):
         self.num_workers = num_workers
         self.prefetch_factor = prefetch_factor
         self.pin_memory = pin_memory
+        self.noise_members = noise_members
+        self.ensemble_metrics = ensemble_metrics
+        self.features_to_plot = features_to_plot
+
 
         # Get dataset in initialisation to have access to this attribute before method trainer.fit
         self.train_ds, self.val_ds, self.test_ds = get_datasets(
@@ -109,6 +117,7 @@ class PlDataModule(LightningDataModule):
             shuffle=True,
             prefetch_factor=self.prefetch_factor,
             pin_memory=self.pin_memory,
+            drop_last=True,
         )
 
     def val_dataloader(self):
@@ -118,6 +127,7 @@ class PlDataModule(LightningDataModule):
             shuffle=False,
             prefetch_factor=self.prefetch_factor,
             pin_memory=self.pin_memory,
+            drop_last=True,
         )
 
     def test_dataloader(self):
@@ -164,7 +174,9 @@ class AutoRegressiveLightning(LightningModule):
         num_pred_steps_train: int = 1,
         num_pred_steps_val_test: int = 1,
         batch_size: int = 2,
+        noise_members: int = 0,
         ensemble_metrics: bool = False,
+        features_to_plot: List[str] = ["t2m"],
         # non-linked args
         model_name: Literal[tuple(model_registry.keys())] = "HalfUNet",
         model_conf: Path | None = None,
@@ -184,7 +196,9 @@ class AutoRegressiveLightning(LightningModule):
         self.dataset_conf = dataset_conf
         self.dataset_info = dataset_info
         self.batch_size = batch_size
+        self.noise_members = noise_members
         self.ensemble_metrics = ensemble_metrics
+        self.features_to_plot = features_to_plot
         self.model_conf = model_conf
         self.model_name = model_name
         self.num_input_steps = num_input_steps
@@ -305,6 +319,7 @@ class AutoRegressiveLightning(LightningModule):
             self.psd_plot_metric = MetricPSDK(self.save_path, pred_step=max_pred_step)
             self.acc_metric = MetricACC(self.dataset_info)
             self.spread_metric = MetricSpread(self.dataset_info, pred_step=max_pred_step+1)
+            self.spread_map_metric = MetricMapSpread(self.dataset_info, pred_step=max_pred_step+1)
             self.configure_loggers()
 
     def configure_loggers(self):
@@ -603,7 +618,6 @@ class AutoRegressiveLightning(LightningModule):
         """
         Train on single batch
         """
-
         # we save the feature names at the first batch
         # to check at inference time if the feature names are the same
         # also useful to build NamedTensor outputs with same feature and dim names
@@ -842,6 +856,16 @@ class AutoRegressiveLightning(LightningModule):
                 ),
             ]
 
+            if self.ensemble_metrics:
+                self.test_plotters.append(SpreadTimestepPlot(
+                    metric=self.spread_map_metric,
+                    dataset_name = self.dataset_info.name,
+                    num_samples_to_plot=self.num_samples_to_plot,
+                    num_features_to_plot=4,
+                    prefix="Test",
+                    save_path=self.save_path,
+                ))
+
     def test_step(self, batch: ItemBatch, batch_idx):
         """
         Run test on single batch
@@ -849,9 +873,25 @@ class AutoRegressiveLightning(LightningModule):
         prediction, target, _ = self._shared_val_test_step(batch, batch_idx, "test")
 
         if self.logging_enabled:
+            
+            desired_indices = [prediction.feature_names_to_idx[feature] for feature in self.features_to_plot]
+            # Use index_select_dim to create a new NamedTensor with only the desired features
+            sliced_prediction = NamedTensor(
+                tensor=prediction.index_select_dim(prediction.feature_dim_name, torch.tensor(desired_indices), bare_tensor=True),
+                names=prediction.names.copy(),
+                feature_names=self.features_to_plot,
+                feature_dim_name=prediction.feature_dim_name
+            )
+            sliced_target = NamedTensor(
+                tensor=target.index_select_dim(target.feature_dim_name, torch.tensor(desired_indices), bare_tensor=True),
+                names=target.names.copy(),
+                feature_names=self.features_to_plot,
+                feature_dim_name=target.feature_dim_name
+            )
+
             # Notify plotters & metrics
             for plotter in self.test_plotters:
-                plotter.update(self, prediction=prediction, target=target)
+                plotter.update(self, prediction=sliced_prediction, target=sliced_target)
 
             self.acc_metric.update(prediction, target)
             self.psd_plot_metric.update(prediction, target, self.original_shape)

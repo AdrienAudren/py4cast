@@ -116,6 +116,7 @@ def plot_prediction(
     domain_info: DomainInfo,
     title=None,
     vrange=None,
+    cmap="RdBu",
 ):
     """
     Plot example prediction and grond truth.
@@ -147,7 +148,7 @@ def plot_prediction(
             alpha=pixel_alpha,
             vmin=vmin,
             vmax=vmax,
-            cmap="plasma",
+            cmap=cmap,
         )
 
     # Ticks and labels
@@ -293,6 +294,11 @@ class MapPlot(Plotter):
             prediction_rescaled = pred * std + mean
             target_rescaled = targ * std + mean
 
+            # save in numpy file std and mean
+            if self.save_path is not None:  
+                np.save(self.save_path / "std.npy", std.cpu().numpy())
+                np.save(self.save_path / "mean.npy", mean.cpu().numpy())
+
             # Iterate over the examples
             # We assume examples are already on grid
             for pred_slice, target_slice in zip(
@@ -346,7 +352,7 @@ def make_gif(paths: List[Path], dest: Path):
         format="GIF",
         append_images=frames[1:],
         save_all=True,
-        duration=250,
+        duration=500,
         loop=0,
     )
 
@@ -411,6 +417,152 @@ class PredictionTimestepPlot(MapPlot):
             if len(paths) > 1:
                 make_gif(
                     paths, self.save_path / f"timestep_evol_per_param/{var_name}.gif"
+                )
+
+class SpreadTimestepPlot(MapPlot):
+    """
+    Observer used to plot prediction and target spread map for each timestep.
+    """
+    def __init__(
+        self,
+        metric: Metric,
+        dataset_name: str,
+        num_samples_to_plot: int,
+        num_features_to_plot: Union[None, int] = None,
+        prefix: str = "Test",
+        save_path: Path = None,
+    ):
+        super().__init__(
+            num_samples_to_plot=num_samples_to_plot,
+            num_features_to_plot=num_features_to_plot,
+            prefix=prefix,
+            save_path=save_path,
+        )
+        self.metric = metric
+        self.dataset_name = dataset_name
+
+        
+
+    def update(
+        self,
+        obj: "AutoRegressiveLightning",
+        prediction: NamedTensor,
+        target: NamedTensor,
+        
+    ) -> None:
+        """
+        Update. Should be call by "on_{training/validation/test}_step
+        """
+        # pred = prediction.clone().tensor  # In order to not modify the input
+        # targ = target.clone().tensor  # In order to not modify the input
+
+        # Here we reshape output from GNNS to be on the grid
+        if prediction.num_spatial_dims == 1:
+            prediction.tensor = einops.rearrange(
+                prediction.tensor, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
+            )
+            target.tensor = einops.rearrange(
+                target.tensor, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
+            )
+
+        if self.plotted_examples < self.num_samples_to_plot:
+            # Rescale to original data scale
+            std = obj.stats.to_list("std", prediction.feature_names).to(
+                prediction.tensor, non_blocking=True
+            )
+            mean = obj.stats.to_list("mean", prediction.feature_names).to(
+                prediction.tensor, non_blocking=True
+            )
+            prediction_rescaled = prediction.tensor * std + mean
+            target_rescaled = target.tensor * std + mean
+
+            # # Compute spread on cpu
+            # prediction_std = torch.from_numpy(prediction_rescaled.cpu().numpy().std(axis=0))
+            # target_std = torch.from_numpy(target_rescaled.cpu().numpy().std(axis=0))
+            self.metric.update(prediction_rescaled, target_rescaled)
+            std_dict = self.metric.compute(prefix="test")
+            prediction_std = std_dict["preds"]
+            target_std = std_dict[self.dataset_name]
+            
+            var_vmin = target_std.flatten(0, 2).min(dim=0)[0].cpu().numpy()
+            var_vmax = target_std.flatten(0, 2).max(dim=0)[0].cpu().numpy()
+            var_vranges = list(zip(var_vmin, var_vmax))
+
+            feature_names = (
+                prediction.feature_names[: self.num_features_to_plot]
+                if self.num_features_to_plot
+                else prediction.feature_names
+            )
+
+            self.plotted_examples += 1
+
+            if obj.trainer.is_global_zero:
+                # Plot figs only on main process
+
+                self.plot_map(
+                    obj,
+                    prediction_std,
+                    target_std,
+                    feature_names,
+                    var_vranges,
+                )
+
+    def plot_map(
+        self,
+        obj: "AutoRegressiveLightning",
+        prediction: torch.tensor,
+        target: torch.tensor,
+        feature_names: List[str],
+        var_vranges: List,
+    ) -> None:
+        # Prediction and target: (pred_steps, Nlat, Nlon, features)
+        # Iterate over prediction horizon time steps
+        paths_dict = defaultdict(list)
+        for t_i, (pred_t, target_t) in enumerate(zip(prediction, target), start=1):
+            # Create one figure per variable at this time step
+            # This generate a matplotlib warning as more than 20 figures are plotted.
+            units = [obj.dataset_info.units[name] for name in feature_names]
+            var_figs = [
+                plot_prediction(
+                    pred_t[:, :, var_i],
+                    target_t[:, :, var_i],
+                    obj.interior_2d[:, :, 0],
+                    title=f"{var_name} ({var_unit}), "
+                    f"t={t_i} ({obj.dataset_info.pred_step*t_i} h)",
+                    vrange=var_vrange,
+                    domain_info=obj.dataset_info.domain_info,
+                    cmap="viridis",
+                )
+                for var_i, (var_name, var_unit, var_vrange) in enumerate(
+                    zip(feature_names, units, var_vranges)
+                )
+            ]
+            # TODO : don't create all figs at once to avoid matplotlib warning
+            tensorboard = obj.logger.experiment
+            for var_name, fig in zip(feature_names, var_figs):
+                fig_name = f"timestep_spread_evol_per_param/{var_name}_example_{self.plotted_examples}"
+                tensorboard.add_figure(fig_name, fig, t_i)
+                fig_full_name = f"{fig_name}_{t_i}.png"
+                if self.save_path is not None and self.save_path.exists():
+                    dest_file = self.save_path / fig_full_name
+                    paths_dict[var_name].append(dest_file)
+                    dest_file.parent.mkdir(exist_ok=True)
+                    fig.savefig(dest_file)
+
+                if obj.mlflow_logger:
+                    run_id = obj.mlflow_logger.version
+                    obj.mlflow_logger.experiment.log_figure(
+                        run_id=run_id,
+                        figure=fig,
+                        artifact_file=f"figures/{fig_full_name}",
+                    )
+
+                plt.close(fig)
+
+        for var_name, paths in paths_dict.items():
+            if len(paths) > 1:
+                make_gif(
+                    paths, self.save_path / f"timestep_spread_evol_per_param/{var_name}.gif"
                 )
 
 
