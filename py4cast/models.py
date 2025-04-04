@@ -7,6 +7,9 @@ import importlib
 import pkgutil
 from typing import Any, Tuple
 
+import sys
+import os
+
 from mfai.torch.models import registry as mfai_registry
 from mfai.torch.models.base import ModelABC
 

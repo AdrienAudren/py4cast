@@ -1,7 +1,7 @@
 import traceback
 import warnings
 from pathlib import Path
-from typing import Dict, Tuple, Union
+from typing import Dict, Tuple, Union, Literal
 
 from py4cast.settings import DEFAULT_CONFIG_DIR
 
@@ -65,6 +65,7 @@ def get_datasets(
     num_pred_steps_train: int,
     num_pred_steps_val_test: int,
     noise_members: int,
+    noise_strategy: Literal["forcing", "stochastic_EPA"],
     config_file: Union[str, None] = None,
     config_override: Union[Dict, None] = None,
 ) -> Tuple[DatasetABC, DatasetABC, DatasetABC]:
@@ -96,6 +97,7 @@ def get_datasets(
         num_input_steps,
         num_pred_steps_train,
         num_pred_steps_val_test,
-        config_override,
         noise_members,
+        noise_strategy,
+        config_override,
     )

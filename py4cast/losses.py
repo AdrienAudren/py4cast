@@ -17,7 +17,7 @@ class AlmostFairCRPS(torch.nn.Module):
         super().__init__()
         self.alpha = alpha
     
-    def forward(self, preds, targets):
+    def forward(self, preds, targets, epoch=None):
         """
         Compute almost fair CRPS (afCRPS) for ensemble forecasts.
         
@@ -29,13 +29,18 @@ class AlmostFairCRPS(torch.nn.Module):
             torch.Tensor: Computed afCRPS value.
         """
         M = preds.shape[0]  # Number of ensemble members
+        # transitioning coefficient
+        # sigmoid_input = torch.tensor(0.1 * (epoch - 70))
+        # transitioning_coef = torch.sigmoid(sigmoid_input)
+
         # print shape of target and preds
         # breakpoint()
         # print(f"preds shape: {preds.shape}")
         # print(f"targets shape: {targets.shape}")
-        # Expand target dimensions to match preds for broadcasting
-        #targets = targets.unsqueeze(0)  # Shape: (1, pred_steps, W, H, d_f)
-        targets = targets.mean(dim=0).unsqueeze(0)  # Shape: (1, pred_steps, W, H, d_f)
+
+        # Expand target dimensions if mean is used as proxy for CRPS ground truth
+        #targets = targets.mean(dim=0).unsqueeze(0)  # Shape: (1, pred_steps, W, H, d_f)
+
         # Compute |x_j - y| term
         abs_diff_target = torch.abs(preds - targets).mean(dim=0)  # Shape: (pred_steps, W, H, d_f)
         
@@ -51,7 +56,7 @@ class AlmostFairCRPS(torch.nn.Module):
         epsilon = (1 - self.alpha) / M
         
         # Compute afCRPS
-        afcrps = abs_diff_target - ((1 - epsilon) / (2 * M * (M - 1))) * pairwise_sum # Shape: (pred_steps, W, H, d_f)
+        afcrps = abs_diff_target - ((1 - epsilon) / (2 * M * (M - 1))) * pairwise_sum #* transitioning_coef # Shape: (pred_steps, W, H, d_f)
         # breakpoint()
         # print(f"afcrps shape: {afcrps.shape}")
         
@@ -85,7 +90,7 @@ class Py4CastLoss(ABC):
         """
 
     @abstractmethod
-    def forward(self, prediction: NamedTensor, target: NamedTensor) -> torch.Tensor:
+    def forward(self, prediction: NamedTensor, target: NamedTensor, epoch=None) -> torch.Tensor:
         """
         Compute the loss function
         """
@@ -156,6 +161,7 @@ class WeightedLoss(Py4CastLoss):
         self,
         prediction: NamedTensor,
         target: NamedTensor,
+        epoch=None,
         reduce_spatial_dim=True,
     ) -> torch.Tensor:
         """
@@ -165,8 +171,10 @@ class WeightedLoss(Py4CastLoss):
         """
 
         # Compute Torch loss (defined in the parent class when this Mixin is used)
-        torch_loss = self.loss(prediction.tensor, target.tensor)
-
+        if self.loss.__class__ == AlmostFairCRPS:
+            torch_loss = self.loss(prediction.tensor, target.tensor, epoch)
+        else:
+            torch_loss = self.loss(prediction.tensor, target.tensor)
         # Retrieve the weights for each feature
         weights = self.weights(tuple(prediction.feature_names), prediction.device)
 
@@ -207,14 +215,17 @@ class ScaledLoss(Py4CastLoss):
         self.register_loss_state_buffers(lm, interior_mask, loss_state_weight)
         self.lm = lm
 
-    def forward(self, prediction: NamedTensor, target: NamedTensor) -> torch.Tensor:
+    def forward(self, prediction: NamedTensor, target: NamedTensor, epoch=None) -> torch.Tensor:
         """
         Computed weighted loss function averaged over all spatial dimensions.
         prediction/target: (B, pred_steps, N_grid, d_f) or (B, pred_steps, W, H, d_f)
         returns (B, pred_steps)
         """
         # Compute Torch loss (defined in the parent class when this Mixin is used)
-        torch_loss = self.loss(prediction.tensor, target.tensor)
+        if self.loss.__class__ == AlmostFairCRPS:
+            torch_loss = self.loss(prediction.tensor, target.tensor, epoch)
+        else:
+            torch_loss = self.loss(prediction.tensor, target.tensor)
 
         # Compute the mean loss value over spatial dimensions
         mean_loss = (

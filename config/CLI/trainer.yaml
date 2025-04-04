@@ -1,26 +1,26 @@
 # lightning.pytorch==2.4.0
 seed_everything: true
 
-ckpt_path: "/path2ckpt/epoch=247-val_mean_loss=22.50.ckpt" #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
+ckpt_path: #"/path2ckpt/epoch=114-val_mean_loss=3.09.ckpt" #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
 
 optimizer:
   class_path: torch.optim.AdamW
   init_args:
-    lr: 5e-5 #0.001 #8.72e-5 # # 3.9796e-8
+    lr: 1e-4 #5e-5 #0.001 #8.72e-5 # # 3.9796e-8
 
-# lr_scheduler:
-#   class_path: pl_bolts.optimizers.lr_scheduler.LinearWarmupCosineAnnealingLR
-#   init_args:
-#     warmup_epochs: 1
-#     max_epochs: 250
-#     eta_min: 0
+lr_scheduler:
+  class_path: pl_bolts.optimizers.lr_scheduler.LinearWarmupCosineAnnealingLR
+  init_args:
+    warmup_epochs: 1
+    max_epochs: 100
+    eta_min: 0
 
 
 trainer:               # Native training arguments of ligthining.pytorch.Trainer
 
   fast_dev_run: False  # True: fit with only 1 batch and 1 epoch, use for dev (logging & checkpointing disabled)
-  num_nodes: 1         # Num of GPU nodes (1 if device=cpu)
-  max_epochs: 140
+  num_nodes: 2         # Num of GPU nodes (1 if device=cpu)
+  max_epochs: 100
   profiler: null       # Performance profiler. Possibilities are [null, simple, or specific custom class (see doc)]
 
   logger:
@@ -28,9 +28,9 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
     - class_path: lightning.pytorch.loggers.TensorBoardLogger
       init_args:
         # default_hp_metric: False # see if tensoboard still works before rm TODO
-        save_dir:   "/py4cast_root_dir/titan_30var/base" #       "/py4cast_root_dir/titan_6var/" "/py4cast_root_dir/test_metrics" # Root directory
+        save_dir:   "/py4cast_root_dir/titan_6var" #       "/py4cast_root_dir/titan_6var/" "/py4cast_root_dir/test_metrics" # Root directory
         name:                            # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
-        version:  test_20230618 #Unetrpp_crps_poesy_1sbp #test_poesy  #Unetrpp_crps_60epoch_3nm_5sbp  #test_titan # #8_stepBP_limBatch #  #9_stepBP                       # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
+        version:   Unetrpp_crps_stoEPA #test_20230618 #Unetrpp_crps_poesy_1sbp #test_poesy  #Unetrpp_crps_60epoch_3nm_5sbp  #test_titan # #8_stepBP_limBatch #  #9_stepBP                       # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
     # Your logs will be saved in save_dir/*name*/version/
     # (checkpoints, config.yaml, images, scores, tensorboard logs, ...)
     # Lightning automatically increments the version index of your experiment

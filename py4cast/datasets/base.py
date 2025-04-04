@@ -488,7 +488,7 @@ class Sample:
             timedeltas=self.output_timestamps.timedeltas,
             grid=self.grid,
         )
-        if self.settings.noise_members > 0:
+        if self.settings.noise_strategy == "forcing":
             external_forcings.append(
                 NamedTensor(
                     feature_names=["noise"],
@@ -742,7 +742,7 @@ class DatasetABC(Dataset):
         """
         res = 4  # For date
         res += 1  # For solar forcing
-        res += 1 if self.settings.noise_members > 0 else 0
+        res += 1 if self.settings.noise_strategy == "forcing" else 0
 
         for param in self.params:
             if param.kind == "input":
@@ -864,6 +864,7 @@ class DatasetABC(Dataset):
         num_pred_steps_train: int,
         num_pred_steps_val_test: int,
         noise_members: int,
+        noise_strategy: Literal["forcing", "stochastic_EPA"],
     ) -> Tuple[Type["DatasetABC"], Type["DatasetABC"], Type["DatasetABC"]]:
         grid = Grid(load_grid_info_func=accessor_kls.load_grid_info, **conf["grid"])
 
@@ -880,6 +881,7 @@ class DatasetABC(Dataset):
             num_pred_steps=num_pred_steps_train,
             members=members,
             noise_members=noise_members,
+            noise_strategy=noise_strategy,
             **conf["settings"],
         )
         train_period = Period(**conf["periods"]["train"], name="train")
@@ -893,6 +895,7 @@ class DatasetABC(Dataset):
             num_pred_steps=num_pred_steps_val_test,
             members=members,
             noise_members=noise_members,
+            noise_strategy=noise_strategy,
             **conf["settings"],
         )
         valid_period = Period(**conf["periods"]["valid"], name="valid")
@@ -916,6 +919,7 @@ class DatasetABC(Dataset):
         num_pred_steps_train: int,
         num_pred_steps_val_tests: int,
         noise_members: int,
+        noise_strategy: Literal["forcing", "stochastic_EPA"],
         config_override: Union[Dict, None] = None,
     ) -> Tuple[Type["DatasetABC"], Type["DatasetABC"], Type["DatasetABC"]]:
         """
@@ -937,4 +941,5 @@ class DatasetABC(Dataset):
             num_pred_steps_train,
             num_pred_steps_val_tests,
             noise_members,
+            noise_strategy,
         )

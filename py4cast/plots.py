@@ -116,7 +116,7 @@ def plot_prediction(
     domain_info: DomainInfo,
     title=None,
     vrange=None,
-    cmap="RdBu",
+    cmap="plasma",
 ):
     """
     Plot example prediction and grond truth.
@@ -139,7 +139,7 @@ def plot_prediction(
 
     # Plot pred and target
     for ax, data in zip(axes, (target, pred)):
-        ax.coastlines()  # Add coastline outlines
+        #ax.coastlines()  # Add coastline outlines
         # data_grid = data.reshape(*grid_shape).cpu().numpy()
         im = ax.imshow(
             data.cpu().numpy(),

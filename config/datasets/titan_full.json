@@ -1,7 +1,7 @@
 {
     "periods": {
         "train": {
-            "start": 2022123123,
+            "start": 2020010103,
             "end": 2022123123,
             "obs_step": 3600
         },
@@ -32,14 +32,6 @@
             "levels": [2],
             "kind": "input_output"
         },
-        "aro_r2": {
-            "levels": [2],
-            "kind": "input_output"
-        },
-        "aro_tp": {
-            "levels": [0],
-            "kind": "input_output"
-        },
         "aro_u10": {
             "levels": [10],
             "kind": "input_output"
@@ -48,20 +40,16 @@
             "levels": [10],
             "kind": "input_output"
         },
+        "aro_tp": {
+            "levels": [0],
+            "kind": "input_output"
+        },
         "aro_t": {
-            "levels": [250, 500, 700, 850],
-            "kind": "input_output"
-        },
-        "aro_u": {
-            "levels": [250, 500, 700, 850],
-            "kind": "input_output"
-        },
-        "aro_v": {
-            "levels": [250, 500, 700, 850],
+            "levels": [850],
             "kind": "input_output"
         },
         "aro_z": {
-            "levels": [250, 500, 700, 850],
+            "levels": [500],
             "kind": "input_output"
         }
     }

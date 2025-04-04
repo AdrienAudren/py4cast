@@ -3,15 +3,16 @@ data:
   dataset_name: "poesy"
   num_input_steps: 1
   num_pred_steps_train: 1
-  num_pred_steps_val_test: 1
-  batch_size: 4 # per device
+  num_pred_steps_val_test: 44
+  batch_size: 5 # per device
 
   #other args
-  num_workers: 16
+  num_workers: 5
   prefetch_factor: null
   pin_memory: False 
   #dataset_conf: "/home/mluser/py4cast/config/datasets/poesy_refacto.json"
   predict_conf: null
-  ensemble_metrics: False
+  ensemble_metrics: True
   features_to_plot: ["aro_t2m_2m", "aro_tp_0m", "aro_u10_10m", "aro_v10_10m", "aro_t_850hpa", "aro_z_500hpa"]
   noise_members: 1
+  noise_strategy: "forcing"

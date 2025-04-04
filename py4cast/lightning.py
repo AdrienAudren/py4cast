@@ -64,6 +64,7 @@ class PlDataModule(LightningDataModule):
         predict_conf: Dict | None = None,
         ensemble_metrics: bool = False,
         noise_members: int = 0,
+        noise_strategy: Literal["forcing", "stochastic_EPA"] = "forcing",
         features_to_plot: List[str] = ["t2m"],
     ):
         super().__init__()
@@ -75,6 +76,7 @@ class PlDataModule(LightningDataModule):
         self.prefetch_factor = prefetch_factor
         self.pin_memory = pin_memory
         self.noise_members = noise_members
+        self.noise_strategy = noise_strategy
         self.ensemble_metrics = ensemble_metrics
         self.features_to_plot = features_to_plot
 
@@ -85,9 +87,10 @@ class PlDataModule(LightningDataModule):
             num_input_steps,
             num_pred_steps_train,
             num_pred_steps_val_test,
+            noise_members,
+            noise_strategy,
             dataset_conf,
             predict_conf,
-            noise_members,
         )
 
     @property
@@ -175,6 +178,7 @@ class AutoRegressiveLightning(LightningModule):
         num_pred_steps_val_test: int = 1,
         batch_size: int = 2,
         noise_members: int = 0,
+        noise_strategy: Literal["forcing", "stochastic_EPA"] = "forcing",
         ensemble_metrics: bool = False,
         features_to_plot: List[str] = ["t2m"],
         # non-linked args
@@ -197,6 +201,7 @@ class AutoRegressiveLightning(LightningModule):
         self.dataset_info = dataset_info
         self.batch_size = batch_size
         self.noise_members = noise_members
+        self.noise_strategy = noise_strategy
         self.ensemble_metrics = ensemble_metrics
         self.features_to_plot = features_to_plot
         self.model_conf = model_conf
@@ -629,7 +634,7 @@ class AutoRegressiveLightning(LightningModule):
 
         prediction, target = self.common_step(batch)
         # Compute loss: mean over unrolled times and batch
-        batch_loss = torch.mean(self.loss(prediction, target))
+        batch_loss = torch.mean(self.loss(prediction, target, epoch=self.current_epoch))
 
         self.training_step_losses.append(batch_loss)
 
@@ -746,7 +751,7 @@ class AutoRegressiveLightning(LightningModule):
         with torch.no_grad():
             prediction, target = self.common_step(batch)
 
-        time_step_loss = torch.mean(self.loss(prediction, target), dim=0)
+        time_step_loss = torch.mean(self.loss(prediction, target, epoch=self.current_epoch), dim=0)
         mean_loss = torch.mean(time_step_loss)
 
         if self.logging_enabled:
