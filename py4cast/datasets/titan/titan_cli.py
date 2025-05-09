@@ -64,6 +64,8 @@ def prepare(
     num_input_steps: int = 1,
     num_pred_steps_train: int = 1,
     num_pred_steps_val_test: int = 1,
+    noise_members: int = 0,
+    noise_strategy: str = "stochastic_EPA",
     convert_grib2npy: bool = False,
     compute_stats: bool = True,
 ):
@@ -86,6 +88,8 @@ def prepare(
         num_input_steps=num_input_steps,
         num_pred_steps_train=num_pred_steps_train,
         num_pred_steps_val_test=num_pred_steps_val_test,
+        noise_members=noise_members,
+        noise_strategy=noise_strategy,
     )
     train_ds.cache_dir.mkdir(exist_ok=True)
     data_dir = train_ds.cache_dir / "data"
@@ -111,13 +115,13 @@ def prepare(
         test_ds.settings.standardize = True
 
     if compute_stats:
-        if hasattr(train_ds, "sample_list"):
-            del train_ds.sample_list
+        # if hasattr(train_ds, "sample_list"):
+        #     del train_ds.sample_list
         train_ds.settings.standardize = False
         print("Computing stats on each parameter...")
         cds.compute_parameters_stats(train_ds)
-        if hasattr(train_ds, "sample_list"):
-            del train_ds.sample_list
+        # if hasattr(train_ds, "sample_list"):
+        #     del train_ds.sample_list
         train_ds.settings.standardize = True
         print("Computing time stats on each parameters, between 2 timesteps...")
         cds.compute_time_step_stats(train_ds)

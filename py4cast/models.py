@@ -10,6 +10,8 @@ from typing import Any, Tuple
 import sys
 import os
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "/home_nfs/audrena/mfai")))
+
 from mfai.torch.models import registry as mfai_registry
 from mfai.torch.models.base import ModelABC
 

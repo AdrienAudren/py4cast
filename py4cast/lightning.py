@@ -22,18 +22,21 @@ from mfai.torch.models.utils import (
 )
 from mlflow.models.signature import infer_signature
 from torchinfo import summary
+from transformers.optimization import get_cosine_with_min_lr_schedule_with_warmup
 
 from py4cast.datasets import get_datasets
 from py4cast.datasets.base import DatasetInfo, ItemBatch, NamedTensor, Statics
 from py4cast.io.outputs import GribSavingSettings, save_named_tensors_to_grib
 from py4cast.losses import ScaledLoss, WeightedLoss
-from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDVar, MetricSpread, MetricMapSpread
+from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDVar, MetricSpread, MetricMapSpread, MetricRMSE, MetricCRPS
 from py4cast.models import build_model_from_settings, get_model_kls_and_settings
 from py4cast.models import registry as model_registry
 from py4cast.plots import (
     PredictionEpochPlot,
     PredictionTimestepPlot,
     SpreadTimestepPlot,
+    SpreadSkillPlot,
+    CRPSPlot,
     SpatialErrorPlot,
     StateErrorPlot,
 )
@@ -65,6 +68,7 @@ class PlDataModule(LightningDataModule):
         ensemble_metrics: bool = False,
         noise_members: int = 0,
         noise_strategy: Literal["forcing", "stochastic_EPA"] = "forcing",
+        shortcut_length: int = None,
         features_to_plot: List[str] = ["t2m"],
     ):
         super().__init__()
@@ -77,6 +81,7 @@ class PlDataModule(LightningDataModule):
         self.pin_memory = pin_memory
         self.noise_members = noise_members
         self.noise_strategy = noise_strategy
+        self.shortcut_length = shortcut_length
         self.ensemble_metrics = ensemble_metrics
         self.features_to_plot = features_to_plot
 
@@ -179,6 +184,7 @@ class AutoRegressiveLightning(LightningModule):
         batch_size: int = 2,
         noise_members: int = 0,
         noise_strategy: Literal["forcing", "stochastic_EPA"] = "forcing",
+        shortcut_length: int = None,
         ensemble_metrics: bool = False,
         features_to_plot: List[str] = ["t2m"],
         # non-linked args
@@ -190,6 +196,11 @@ class AutoRegressiveLightning(LightningModule):
         training_strategy: Literal["diff_ar", "scaled_ar"] = "diff_ar",
         channels_last: bool = False,
         io_conf: Path | None = None,
+        mask_ratio: float = 0,
+        learning_rate: float = 1e-4,
+        min_learning_rate: float = 1e-6,
+        num_warmup_steps: int = 0,
+        betas: tuple = (0.9, 0.999),
         *args,
         **kwargs,
     ):
@@ -202,6 +213,7 @@ class AutoRegressiveLightning(LightningModule):
         self.batch_size = batch_size
         self.noise_members = noise_members
         self.noise_strategy = noise_strategy
+        self.shortcut_length = shortcut_length
         self.ensemble_metrics = ensemble_metrics
         self.features_to_plot = features_to_plot
         self.model_conf = model_conf
@@ -215,6 +227,11 @@ class AutoRegressiveLightning(LightningModule):
         self.len_train_loader = len_train_loader
         self.channels_last = channels_last
         self.io_conf = io_conf
+        self.mask_ratio = mask_ratio
+        self.learning_rate = learning_rate
+        self.min_learning_rate = min_learning_rate
+        self.num_warmup_steps = num_warmup_steps
+        self.betas = betas
 
         if self.num_inter_steps > 1 and self.num_input_steps > 1:
             raise AttributeError(
@@ -316,7 +333,6 @@ class AutoRegressiveLightning(LightningModule):
         exp_summary(self)
 
     def setup(self, stage=None):
-        self.logger.log_hyperparams(self.hparams, metrics={"val_mean_loss": 0.0})
         if self.logging_enabled:
             self.save_path = Path(self.trainer.logger.log_dir)
             max_pred_step = self.num_pred_steps_val_test - 1
@@ -325,6 +341,8 @@ class AutoRegressiveLightning(LightningModule):
             self.acc_metric = MetricACC(self.dataset_info)
             self.spread_metric = MetricSpread(self.dataset_info, pred_step=max_pred_step+1)
             self.spread_map_metric = MetricMapSpread(self.dataset_info, pred_step=max_pred_step+1)
+            self.rmse_metric = MetricRMSE(self.dataset_info, pred_step=max_pred_step+1)
+            self.crps_metric = MetricCRPS(self.dataset_info, pred_step=max_pred_step+1)
             self.configure_loggers()
 
     def configure_loggers(self):
@@ -403,9 +421,37 @@ class AutoRegressiveLightning(LightningModule):
 
     def on_fit_start(self):
         self.log_hparams_tb()
+        self.print_summary_model()
+
+    def configure_optimizers(self):
+        """
+        Configure the optimizer and scheduler
+        """
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.hparams.learning_rate,
+            betas=self.hparams.betas,
+        )
+
+        # Scheduler
+        scheduler = get_cosine_with_min_lr_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=self.hparams.num_warmup_steps,
+            num_training_steps=self.trainer.estimated_stepping_batches,
+            min_lr=self.hparams.min_learning_rate,
+        )
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            },
+        }
 
     def _next_x(
-        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int
+        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int, t: int = None, dt: float = None, st: NamedTensor = None
     ) -> torch.Tensor:
         """
         Build the next x input for the model at timestep step_idx using the :
@@ -414,14 +460,55 @@ class AutoRegressiveLightning(LightningModule):
         - static features
         """
         forcing = batch.forcing.select_dim("timestep", step_idx, bare_tensor=False)
-        x = torch.cat(
+
+        if t is not None:
+            t = t.view(t.shape[0], 1, 1, 1)
+        if dt is not None:
+            dt = dt.view(dt.shape[0], 1, 1, 1)
+
+        if t is not None and dt is not None:
+            # Needs to return x(t+dt) for s(t+dt) compute
+            x = torch.cat(
             [
-                prev_states.select_dim("timestep", idx)
+                (1-t)*prev_states.select_dim("timestep", idx) + t*batch.outputs.select_dim("timestep", idx) + st*dt
                 for idx in range(batch.num_input_steps)
             ]
             + [self.grid_static_features[: batch.batch_size], forcing.tensor],
             dim=forcing.dim_index("features"),
-        )
+            )
+        
+        elif t is not None and dt is None:
+            # Needs to return x(t) for s(t) compute
+            x = torch.cat(
+            [
+                (1-t)*prev_states.select_dim("timestep", idx) + t*batch.outputs.select_dim("timestep", idx)
+                for idx in range(batch.num_input_steps)
+            ]
+            + [self.grid_static_features[: batch.batch_size], forcing.tensor],
+            dim=forcing.dim_index("features"),
+            )
+        
+        elif t is None and dt is not None:
+            # Needs to return x(t+dt) for "sampling"
+            x = torch.cat(
+            [
+                prev_states.select_dim("timestep", idx) + st*dt
+                for idx in range(batch.num_input_steps)
+            ]
+            + [self.grid_static_features[: batch.batch_size], forcing.tensor],
+            dim=forcing.dim_index("features"),
+            )
+
+        else:
+            # Default case, not flow matching training 
+            x = torch.cat(
+                [
+                    prev_states.select_dim("timestep", idx)
+                    for idx in range(batch.num_input_steps)
+                ]
+                + [self.grid_static_features[: batch.batch_size], forcing.tensor],
+                dim=forcing.dim_index("features"),
+            )
         return x
 
     def _step_diffs(
@@ -472,6 +559,36 @@ class AutoRegressiveLightning(LightningModule):
                     return self._common_step(batch, inference)
             else:
                 return self._common_step(batch, inference)
+    def common_step_FM_training(
+        self, batch: ItemBatch, inference: bool = False
+    ) -> Tuple[NamedTensor, NamedTensor]:
+        """
+        Handling autocast subtelty for mixed precision on GPU and CPU (only bf16 for the later).
+        """
+        if torch.cuda.is_available():
+            with torch.amp.autocast("cuda", dtype=self.dtype):
+                return self._common_step_FM_training(batch, inference)
+        else:
+            if not inference and "bf16" in self.trainer.precision:
+                with torch.amp.autocast("cuda", dtype=self.dtype):
+                    return self._common_step_FM_training(batch, inference)
+            else:
+                return self._common_step_FM_training(batch, inference)
+    def common_step_FM_sampling(
+        self, batch: ItemBatch, inference: bool = False
+    ) -> Tuple[NamedTensor, NamedTensor]:
+        """
+        Handling autocast subtelty for mixed precision on GPU and CPU (only bf16 for the later).
+        """
+        if torch.cuda.is_available():
+            with torch.amp.autocast("cuda", dtype=self.dtype):
+                return self._common_step_FM_sampling(batch, inference)
+        else:
+            if not inference and "bf16" in self.trainer.precision:
+                with torch.amp.autocast("cuda", dtype=self.dtype):
+                    return self._common_step_FM_sampling(batch, inference)
+            else:
+                return self._common_step_FM_sampling(batch, inference)
 
     def _common_step(
         self, batch: ItemBatch, inference: bool = False
@@ -607,6 +724,242 @@ class AutoRegressiveLightning(LightningModule):
             )
         return pred_out, batch.outputs
 
+    def _common_step_FM_training(
+        self, batch: ItemBatch, inference: bool = False
+    ) -> Tuple[NamedTensor, NamedTensor]:
+        """
+        We extend here the _common_step diff_ar strategy, which is basically one step flow matching, 
+        to multi step flow matching combined with shortcut models. We followed training implementation of Frans et al.
+        ONE STEP DIFFUSION VIA SHORTCUT MODELS https://arxiv.org/pdf/2410.12557
+        """
+            
+        force_border, scale_y, num_inter_steps = self._strategy_params()
+        # Right now we postpone that we have a single input/output/forcing
+
+        self.original_shape = None
+
+        if self.model.model_type == ModelType.GRAPH:
+            # Stack original shape to reshape later
+            self.original_shape = batch.inputs.tensor.shape
+            # Graph model, we flatten the batch spatial dims
+            batch.inputs.flatten_("ngrid", *batch.inputs.spatial_dim_idx)
+
+            if not inference:
+                batch.outputs.flatten_("ngrid", *batch.outputs.spatial_dim_idx)
+
+            batch.forcing.flatten_("ngrid", *batch.forcing.spatial_dim_idx)
+
+        prev_states = batch.inputs
+        prediction_list = []
+
+        # Draw t and dt
+        t = torch.rand(self.batch_size, device=prev_states.device)
+        dt = 1/(2**torch.floor(torch.rand(self.batch_size, device=prev_states.device)*7))
+        x_t = self._next_x(batch, prev_states, 0, t=t)
+
+        border_state = batch.outputs.select_dim("timestep", 0)
+
+        # Graph (B, N_grid, d_f) or Conv (B, N_lat,N_lon d_f)
+        if self.channels_last:
+            x_t = x_t.to(memory_format=torch.channels_last)
+
+        ########################################################################################################
+        # draw a random variable in [0,1] and verify it has value < 0.75, 3/4 of the time -> velocity matching #
+        ########################################################################################################
+        if torch.rand(1).item() < 0.75:
+            
+            # Here we adapt our tensors to the order of dimensions of CNNs and ViTs
+            if self.model.features_second:
+                x_t = features_last_to_second(x_t)
+                y = self.model(x_t, t=t, dt=dt)
+                y = features_second_to_last(y)
+            else:
+                y = self.model(x_t, t=t, dt=dt)
+
+            # match velocity y = x_1-x_0
+            predicted_state = prev_states.select_dim("timestep", -1) + y
+
+            # Overwrite border with true state
+            # Force it to true state for all intermediary step
+            if not inference and force_border:
+                prediction = (
+                    self.border_mask * border_state
+                    + self.interior_mask * predicted_state
+                )
+            else:
+                prediction = predicted_state
+
+            # no AR loop leadind to a list of preds, requires additionnal dim for timesteps
+            prediction = prediction.unsqueeze(1)
+            #(B, pred_steps, N_grid, d_f) or (B, pred_steps, N_lat, N_lon, d_f)
+
+            pred_out = NamedTensor.new_like(
+            prediction.type_as(batch.outputs.tensor), batch.outputs
+            )
+            return pred_out, batch.outputs
+
+        ######################################################################################################
+        # Else if random variable has value > 0.75, 1/4 of the time, consistency loss term is backpropagated #
+        ######################################################################################################
+        else:
+            # Here we adapt our tensors to the order of dimensions of CNNs and ViTs
+            if self.model.features_second:
+                x_t = features_last_to_second(x_t)
+                s_t = self.model(x_t, t=t, dt=dt)
+                s_t_2d = self.model(x_t, t=t, dt=2*dt)
+                s_t = features_second_to_last(s_t)
+                s_t_2d = features_second_to_last(s_t_2d)
+                x_td = self._next_x(batch, prev_states, 0, t=t, dt=dt, st=s_t)
+                x_td = features_last_to_second(x_td)
+                s_td = self.model(x_td, t=t+dt, dt=dt)
+                s_td = features_second_to_last(s_td)
+
+            else:
+                s_t = self.model(x_t, t=t, dt=dt)
+                s_td = self.model(x_td, t=t+dt, dt=dt)
+                x_td = self._next_x(batch, prev_states, 0, t=t, dt=dt, st=s_t)
+                s_t_2d = self.model(x_t, t=t, dt=2*dt)
+
+            # self-consistency target
+            # no AR loop leadind to a list of preds, requires additionnal dim for timesteps
+            target = torch.unsqueeze((s_t+s_td)/2, 1)
+            pred_out = torch.unsqueeze(s_t_2d, 1)
+            #(B, pred_steps, N_grid, d_f) or (B, pred_steps, N_lat, N_lon, d_f)
+
+            target = NamedTensor.new_like(
+                target.type_as(batch.outputs.tensor), batch.outputs
+            )
+            pred_out = NamedTensor.new_like(
+                pred_out.type_as(batch.outputs.tensor), batch.outputs
+            )
+            return pred_out, target
+
+    def _common_step_FM_sampling(
+        self, batch: ItemBatch, inference: bool = False
+    ) -> Tuple[NamedTensor, NamedTensor]:
+        """
+        We extend here the _common_step diff_ar strategy, which is basically one step flow matching, 
+        to multi step flow matching combined with shortcut models. We followed sampling implementation of Frans et al.
+        ONE STEP DIFFUSION VIA SHORTCUT MODELS https://arxiv.org/pdf/2410.12557
+        """
+        force_border, scale_y, num_inter_steps = self._strategy_params()
+        # Right now we postpone that we have a single input/output/forcing
+
+        self.original_shape = None
+
+        if self.model.model_type == ModelType.GRAPH:
+            # Stack original shape to reshape later
+            self.original_shape = batch.inputs.tensor.shape
+            # Graph model, we flatten the batch spatial dims
+            batch.inputs.flatten_("ngrid", *batch.inputs.spatial_dim_idx)
+
+            if not inference:
+                batch.outputs.flatten_("ngrid", *batch.outputs.spatial_dim_idx)
+
+            batch.forcing.flatten_("ngrid", *batch.forcing.spatial_dim_idx)
+
+        prev_states = batch.inputs
+        num_dynamic_features = batch.inputs.dim_size("features")
+        prediction_list = []
+
+        # Here we do the autoregressive prediction looping
+        # for the desired number of ar steps.
+        for i in range(batch.num_pred_steps):
+            if not inference:
+                border_state = batch.outputs.select_dim("timestep", i)
+
+            # Intermediary steps for which we have no y_true data
+            # Should be greater or equal to 1 (otherwise nothing is done).
+            for k in range(num_inter_steps):
+                dt = torch.tensor(1/self.shortcut_length, device=prev_states.device)*torch.ones(
+                    self.batch_size, device=prev_states.device
+                )
+                t = torch.zeros(self.batch_size, device=prev_states.device)
+                x = self._next_x(batch, prev_states, i)
+
+                # Graph (B, N_grid, d_f) or Conv (B, N_lat,N_lon d_f)
+                if self.channels_last:
+                    x = x.to(memory_format=torch.channels_last)
+
+                for n in range(self.shortcut_length):
+                    
+                    # Here we adapt our tensors to the order of dimensions of CNNs and ViTs
+                    if self.model.features_second:
+                        x = features_last_to_second(x)
+                        s_t = self.model(x, t=t, dt=dt)
+                        s_t = features_second_to_last(s_t)
+                        x = features_second_to_last(x)
+                    else:
+                        s_t = self.model(x, t=t, dt=dt)
+                    
+                    # remove forcings + static features 
+                    # retrieves the number of features of batch.inputs
+                    n = batch
+                    x = x[...,:num_dynamic_features]
+                    # requires timestep dimension to match prev_states dimensions
+                    x = x.unsqueeze(1)
+
+                    x = NamedTensor.new_like(x.type_as(prev_states.tensor), prev_states)
+                    x = self._next_x(batch, x, i, t=None, dt=dt, st=s_t)
+
+                    t = t + dt
+                    
+                # remove forcings + static features from
+                predicted_state = x[...,:num_dynamic_features]
+
+                # Overwrite border with true state
+                # Force it to true state for all intermediary step
+                if not inference and force_border:
+                    new_state = (
+                        self.border_mask * border_state
+                        + self.interior_mask * predicted_state
+                    )
+                else:
+                    new_state = predicted_state
+
+                # Only update the prev_states if we are not at the last step
+                if i < batch.num_pred_steps - 1 or k < num_inter_steps - 1:
+                    # Update input states for next iteration: drop oldest, append new_state
+                    timestep_dim_index = batch.inputs.dim_index("timestep")
+                    new_prev_states_tensor = torch.cat(
+                        [
+                            # Drop the oldest timestep (select all but the first)
+                            prev_states.index_select_dim(
+                                "timestep",
+                                range(1, prev_states.dim_size("timestep")),
+                            ),
+                            # Add the timestep dimension to the new state
+                            new_state.unsqueeze(timestep_dim_index),
+                        ],
+                        dim=timestep_dim_index,
+                    )
+
+                    # Make a new NamedTensor with the same dim and
+                    # feature names as the original prev_states
+                    prev_states = NamedTensor.new_like(
+                        new_prev_states_tensor, prev_states
+                    )
+            # Append prediction to prediction list only "normal steps"
+            prediction_list.append(new_state)
+
+        prediction = torch.stack(
+            prediction_list, dim=1
+        )  # Stacking is done on time step. (B, pred_steps, N_grid, d_f) or (B, pred_steps, N_lat, N_lon, d_f)
+
+        # In inference mode we use a "trained" module which MUST have the output feature names
+        # and the output dim names attributes set.
+        if inference:
+            pred_out = NamedTensor(
+                prediction.type(self.output_dtype),
+                self.output_dim_names,
+                self.output_feature_names,
+            )
+        else:
+            pred_out = NamedTensor.new_like(
+                prediction.type_as(batch.outputs.tensor), batch.outputs
+            )
+        return pred_out, batch.outputs
+
     def on_train_start(self):
         self.train_plotters = []
 
@@ -632,7 +985,10 @@ class AutoRegressiveLightning(LightningModule):
             self.output_dim_names = batch.outputs.names
             self.output_dtype = batch.outputs.tensor.dtype
 
-        prediction, target = self.common_step(batch)
+        if self.shortcut_length is not None:
+            prediction, target = self.common_step_FM_training(batch)
+        else:
+            prediction, target = self.common_step_(batch)
         # Compute loss: mean over unrolled times and batch
         batch_loss = torch.mean(self.loss(prediction, target, epoch=self.current_epoch))
 
@@ -697,7 +1053,11 @@ class AutoRegressiveLightning(LightningModule):
         """
         Forward pass of the model
         """
-        return self.common_step(x, inference=True)[0]
+        if self.shortcut_length is not None:
+            return self.common_step_FM_sampling(x, inference=True)[0]
+        else:
+            return self.common_step_(x, inference=True)[0]
+        
 
     def on_train_epoch_end(self):
         outputs = self.training_step_losses
@@ -749,7 +1109,10 @@ class AutoRegressiveLightning(LightningModule):
 
     def _shared_val_test_step(self, batch: ItemBatch, batch_idx, label: str):
         with torch.no_grad():
-            prediction, target = self.common_step(batch)
+            if self.shortcut_length is not None:
+                prediction, target = self.common_step_FM_sampling(batch)
+            else:
+                prediction, target = self.common_step(batch)
 
         time_step_loss = torch.mean(self.loss(prediction, target, epoch=self.current_epoch), dim=0)
         mean_loss = torch.mean(time_step_loss)
@@ -867,6 +1230,23 @@ class AutoRegressiveLightning(LightningModule):
                     dataset_name = self.dataset_info.name,
                     num_samples_to_plot=self.num_samples_to_plot,
                     num_features_to_plot=4,
+                    prefix="Test",
+                    save_path=self.save_path,
+                ))
+                self.test_plotters.append(SpreadSkillPlot(
+                    metric_spread=self.spread_map_metric,
+                    metric_error=self.rmse_metric,
+                    dataset_name = self.dataset_info.name,
+                    num_samples_to_plot=3,
+                    num_features_to_plot=6,
+                    prefix="Test",
+                    save_path=self.save_path,
+                ))
+                self.test_plotters.append(CRPSPlot(
+                    metric=self.crps_metric,
+                    dataset_name = self.dataset_info.name,
+                    num_samples_to_plot=3,
+                    num_features_to_plot=6,
                     prefix="Test",
                     save_path=self.save_path,
                 ))

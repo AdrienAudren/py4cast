@@ -3,12 +3,13 @@ data:
   dataset_name: titan_refacto2
   num_input_steps: 1
   num_pred_steps_train: 1
-  num_pred_steps_val_test: 1
-  batch_size: 4 # per device
-  noise_members: 4 # total number of members
-  noise_strategy: "stochastic_EPA" 
+  num_pred_steps_val_test: 44
+  batch_size: 1 # per device
+  noise_members: 0 # total number of members
+  noise_strategy: "stochastic_EPA" # 
+  #shortcut_length: 1 # {1, 2, ..., 128} also activate flow matching when not None
   #other args
-  ensemble_metrics: True
+  ensemble_metrics: False
   features_to_plot: ["aro_t2m_2m",  "aro_u10_10m", "aro_tp_0m", "aro_v10_10m", "aro_t_850hpa", "aro_z_500hpa"] # for test step only
   num_workers: 8
   prefetch_factor: null

@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH -p milan7513_A100
 #SBATCH --gres gpu:A100:2
-#SBATCH -N 2
+#SBATCH -N 1
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=8
 ##SBATCH --begin=21:00:00
 ##SBATCH --time=120:00:00
-#SBATCH --job-name=SEPA
+#SBATCH --job-name=baseARP
 #SBATCH --exclusive
-##SBATCH -w pise35
+#SBATCH -w pise34
 
 # export WORKDIR="/home_nfs/audrena/py4cast"
 export WORKDIR=$(pwd)
@@ -43,8 +43,13 @@ time srun --mpi=pmix_v3 \
         ${SINGULARITY_IMAGE} \
         bash -c " \
             pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -e . --no-cache-dir && \
-            python bin/main.py fit \
-                -c config/CLI/trainer.yaml \
-                -c config/CLI/dataset/titan.yaml \
-                -c config/CLI/model/unetrpp.yaml \
+            python py4cast/datasets/titan/titan_cli.py prepare
         "
+
+# bash -c " \
+#             pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -e . --no-cache-dir && \
+#             python bin/main.py fit \
+#                 -c config/CLI/trainer.yaml \
+#                 -c config/CLI/dataset/titan.yaml \
+#                 -c config/CLI/model/unetrpp.yaml \
+#         "

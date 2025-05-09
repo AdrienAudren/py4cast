@@ -10,6 +10,8 @@ import cartopy
 import einops
 import matplotlib
 import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy.stats import wasserstein_distance
 import numpy as np
 import torch
 from PIL import Image
@@ -248,12 +250,14 @@ class MapPlot(Plotter):
         num_features_to_plot: Union[None, int] = None,
         prefix: str = "Test",
         save_path: Path = None,
+        count: int = 0,
     ):
         self.num_samples_to_plot = num_samples_to_plot
         self.plotted_examples = 0
         self.prefix = prefix
         self.num_features_to_plot = num_features_to_plot
         self.save_path = save_path
+        self.count = count
 
     def update(
         self,
@@ -278,7 +282,7 @@ class MapPlot(Plotter):
 
         if (
             obj.trainer.is_global_zero
-            and self.plotted_examples < self.num_samples_to_plot
+            # and self.plotted_examples < self.num_samples_to_plot
         ):
             # Need to plot more example predictions
             n_additional_examples = min(
@@ -293,6 +297,10 @@ class MapPlot(Plotter):
             )
             prediction_rescaled = pred * std + mean
             target_rescaled = targ * std + mean
+            # ###########################################################################################################
+            # np.save(self.save_path / f"titan_gt_rescaled_batch_{self.count}.npy", target_rescaled.cpu().numpy())
+            # self.count += 1
+            # ###########################################################################################################
 
             # save in numpy file std and mean
             if self.save_path is not None:  
@@ -482,7 +490,7 @@ class SpreadTimestepPlot(MapPlot):
             self.metric.update(prediction_rescaled, target_rescaled)
             std_dict = self.metric.compute(prefix="test")
             prediction_std = std_dict["preds"]
-            target_std = std_dict[self.dataset_name]
+            target_std = std_dict["pearo"]
             
             var_vmin = target_std.flatten(0, 2).min(dim=0)[0].cpu().numpy()
             var_vmax = target_std.flatten(0, 2).max(dim=0)[0].cpu().numpy()
@@ -500,6 +508,14 @@ class SpreadTimestepPlot(MapPlot):
                 # Plot figs only on main process
 
                 self.plot_map(
+                    obj,
+                    prediction_std,
+                    target_std,
+                    feature_names,
+                    var_vranges,
+                )
+
+                self.plot_std_diff_map(
                     obj,
                     prediction_std,
                     target_std,
@@ -564,6 +580,561 @@ class SpreadTimestepPlot(MapPlot):
                 make_gif(
                     paths, self.save_path / f"timestep_spread_evol_per_param/{var_name}.gif"
                 )
+
+
+    def plot_std_diff_map(
+        self,
+        obj: "AutoRegressiveLightning",
+        prediction_std: torch.tensor,
+        target_std: torch.tensor,
+        feature_names: List[str],
+        var_vranges: List,
+    ) -> None:
+        # Prediction_std and target_std: (pred_steps, Nlat, Nlon, features)
+        paths_dict = defaultdict(list)
+
+        # Start from t=1 to compute diff with t-1
+        for t_i in range(1, len(prediction_std)):
+            pred_diff = prediction_std[t_i] - prediction_std[t_i - 1]
+            target_diff = target_std[t_i] - target_std[t_i - 1]
+
+            units = [obj.dataset_info.units[name] for name in feature_names]
+            var_figs = [
+                plot_prediction(
+                    pred_diff[:, :, var_i],
+                    target_diff[:, :, var_i],
+                    obj.interior_2d[:, :, 0],
+                    title=f"{var_name} ({var_unit}), Δstd t={t_i} ({obj.dataset_info.pred_step*t_i} h)",
+                    vrange=var_vrange,
+                    domain_info=obj.dataset_info.domain_info,
+                    cmap="seismic",
+                )
+                for var_i, (var_name, var_unit, var_vrange) in enumerate(
+                    zip(feature_names, units, var_vranges)
+                )
+            ]
+
+            tensorboard = obj.logger.experiment
+            for var_name, fig in zip(feature_names, var_figs):
+                fig_name = f"timestep_spread_diff_per_param/{var_name}_example_{self.plotted_examples}"
+                tensorboard.add_figure(fig_name, fig, t_i)
+                fig_full_name = f"{fig_name}_{t_i}.png"
+                if self.save_path is not None and self.save_path.exists():
+                    dest_file = self.save_path / fig_full_name
+                    paths_dict[var_name].append(dest_file)
+                    dest_file.parent.mkdir(exist_ok=True)
+                    fig.savefig(dest_file)
+
+                if obj.mlflow_logger:
+                    run_id = obj.mlflow_logger.version
+                    obj.mlflow_logger.experiment.log_figure(
+                        run_id=run_id,
+                        figure=fig,
+                        artifact_file=f"figures/{fig_full_name}",
+                    )
+
+                plt.close(fig)
+
+        for var_name, paths in paths_dict.items():
+            if len(paths) > 1:
+                make_gif(
+                    paths, self.save_path / f"timestep_spread_diff_per_param/{var_name}.gif"
+                )
+
+class SpreadSkillPlot(MapPlot):
+    """
+    Observer used to plot Spread Skill plot binned by std.
+    """
+    def __init__(
+        self,
+        metric_spread: Metric,
+        metric_error: Metric,
+        dataset_name: str,
+        num_samples_to_plot: int,
+        num_features_to_plot: Union[None, int] = None,
+        prefix: str = "Test",
+        save_path: Path = None,
+    ):
+        super().__init__(
+            num_samples_to_plot=num_samples_to_plot,
+            num_features_to_plot=num_features_to_plot,
+            prefix=prefix,
+            save_path=save_path,
+        )
+        self.metric_spread = metric_spread
+        self.metric_error = metric_error
+        self.dataset_name = dataset_name
+
+        self.LT_start = [0,10,20] # slicing of rollout for spread-skill plot curves
+        self.LT_end = [10,20,44]
+
+        # Define bins for spread
+        self.num_bins = 20
+
+        self.mean_spread_pearo = np.zeros((self.num_samples_to_plot, len(self.LT_start), self.num_bins, self.num_features_to_plot))
+        self.mean_rmse_pearo = np.zeros((self.num_samples_to_plot, len(self.LT_start), self.num_bins, self.num_features_to_plot))
+        self.mean_spread_pred = np.zeros((self.num_samples_to_plot, len(self.LT_start), self.num_bins, self.num_features_to_plot))
+        self.mean_rmse_pred = np.zeros((self.num_samples_to_plot, len(self.LT_start), self.num_bins, self.num_features_to_plot))
+
+        self.ratio_pearo = np.zeros((self.num_samples_to_plot, 44, self.num_features_to_plot))
+        self.ratio_pred = np.zeros((self.num_samples_to_plot, 44, self.num_features_to_plot))
+
+        
+
+    def update(
+        self,
+        obj: "AutoRegressiveLightning",
+        prediction: NamedTensor,
+        target: NamedTensor,
+        
+    ) -> None:
+        """
+        Update. Should be call by "on_{training/validation/test}_step
+        """
+        # pred = prediction.clone().tensor  # In order to not modify the input
+        # targ = target.clone().tensor  # In order to not modify the input
+
+        # Here we reshape output from GNNS to be on the grid
+        if prediction.num_spatial_dims == 1:
+            prediction.tensor = einops.rearrange(
+                prediction.tensor, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
+            )
+            target.tensor = einops.rearrange(
+                target.tensor, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
+            )
+
+        if self.plotted_examples < self.num_samples_to_plot:
+             
+            # Rescale to original data scale
+            std = obj.stats.to_list("std", prediction.feature_names).to(
+                prediction.tensor, non_blocking=True
+            )
+            mean = obj.stats.to_list("mean", prediction.feature_names).to(
+                prediction.tensor, non_blocking=True
+            )
+            prediction_rescaled = prediction.tensor*std + mean 
+            target_rescaled = target.tensor*std + mean
+
+            self.metric_spread.update(prediction_rescaled, target_rescaled)
+            std_dict = self.metric_spread.compute(prefix="test")
+            prediction_std = std_dict["preds"]
+            pearo_std = std_dict["pearo"]
+
+            self.metric_error.update(prediction_rescaled, target_rescaled)
+            skill_dict = self.metric_error.compute(num_batch=self.plotted_examples, prefix="test")
+            prediction_rmse = skill_dict["preds"]
+            pearo_rmse = skill_dict["pearo"]
+            
+
+            feature_names = (
+                prediction.feature_names[: self.num_features_to_plot]
+                if self.num_features_to_plot
+                else prediction.feature_names
+            )
+            units = [obj.dataset_info.units[name] for name in feature_names]
+
+            if obj.trainer.is_global_zero:
+
+                for var_i, (var_name, var_unit) in enumerate(
+                        zip(feature_names, units)
+                    ):
+
+                    for curve in range(len(self.LT_start)):
+
+                        # Flatten arrays to handle all pixels across all images
+                        spread_flat = pearo_std[self.LT_start[curve]:self.LT_end[curve],..., var_i].cpu().numpy().flatten()
+                        rmse_flat = pearo_rmse[self.LT_start[curve]:self.LT_end[curve],..., var_i].cpu().numpy().flatten()
+
+                        bins = np.linspace(spread_flat.min(), 
+                                        spread_flat.max(), 
+                                        self.num_bins + 1)
+                        
+                        mean_spread, mean_rmse = self.bin_and_average_flat(spread_flat, rmse_flat, bins)
+                        #print(mean_spread.shape)
+                        self.mean_spread_pearo[self.plotted_examples, curve, :, var_i] = mean_spread
+                        self.mean_rmse_pearo[self.plotted_examples, curve, :, var_i] = mean_rmse
+
+                        # Flatten arrays to handle all pixels across all images
+                        spread_flat = prediction_std[self.LT_start[curve]:self.LT_end[curve],..., var_i].cpu().numpy().flatten()
+                        rmse_flat = prediction_rmse[self.LT_start[curve]:self.LT_end[curve],..., var_i].cpu().numpy().flatten()
+
+                        bins = np.linspace(spread_flat.min(), 
+                                        spread_flat.max(), 
+                                        self.num_bins + 1)
+                        
+                        mean_spread, mean_rmse = self.bin_and_average_flat(spread_flat, rmse_flat, bins)
+                        #print(mean_spread.shape)
+                        self.mean_spread_pred[self.plotted_examples, curve, :, var_i] = mean_spread
+                        self.mean_rmse_pred[self.plotted_examples, curve, :, var_i] = mean_rmse
+
+                    # Spread Error Ratio
+                    ratio = prediction_std[..., var_i] / prediction_rmse[..., var_i]
+                    ratio = ratio.mean(dim=(1, 2))
+                    self.ratio_pred[self.plotted_examples, :, var_i] = ratio.cpu().numpy()
+
+                    ratio = pearo_std[..., var_i] / pearo_rmse[..., var_i]
+                    ratio = ratio.mean(dim=(1, 2))
+                    self.ratio_pearo[self.plotted_examples, :, var_i] = ratio.cpu().numpy()
+
+                self.plotted_examples += 1
+
+        if self.plotted_examples == self.num_samples_to_plot: # end of epoch
+
+            if obj.trainer.is_global_zero:
+
+                # Average numpy arrays over all examples
+                mean_spread_pearo = np.nanmean(self.mean_spread_pearo[:self.plotted_examples], axis=0) # shape (len(LT_start), num_bins, self.num_features_to_plot)
+                mean_rmse_pearo = np.nanmean(self.mean_rmse_pearo[:self.plotted_examples], axis=0)
+                mean_spread_pred = np.nanmean(self.mean_spread_pred[:self.plotted_examples], axis=0)
+                mean_rmse_pred = np.nanmean(self.mean_rmse_pred[:self.plotted_examples], axis=0)
+
+                mean_ratio_pearo = np.mean(self.ratio_pearo[:self.plotted_examples], axis=0) # shape (44, self.num_features_to_plot)
+                mean_ratio_pred = np.mean(self.ratio_pred[:self.plotted_examples], axis=0)
+
+                print(self.plotted_examples)
+                # Plot figs only on main process
+
+                self.plot_map(
+                    obj,
+                    mean_spread_pearo,
+                    mean_rmse_pearo,
+                    mean_spread_pred,
+                    mean_rmse_pred,
+                    feature_names,
+                )
+
+                self.plot_RSE(
+                    obj,
+                    mean_ratio_pearo,
+                    mean_ratio_pred,
+                    feature_names,
+                )
+
+    def bin_and_average_flat(self, spread_flat, rmse_flat, bins):
+        """
+        Bin the pixel-wise spread and compute the average spread and RMSE for each bin.
+        Always return arrays of length len(bins) - 1.
+        """
+        bin_indices = np.digitize(spread_flat, bins)
+        num_bins = len(bins) - 1
+        mean_spread = np.full(num_bins, np.nan)
+        mean_rmse = np.full(num_bins, np.nan)
+
+        for b in range(1, len(bins)):
+            bin_mask = bin_indices == b
+            if np.any(bin_mask):  # If the bin is not empty
+                mean_spread[b - 1] = np.mean(spread_flat[bin_mask])
+                mean_rmse[b - 1] = np.mean(rmse_flat[bin_mask])
+
+        return mean_spread, mean_rmse
+
+    def plot_map(
+        self,
+        obj: "AutoRegressiveLightning",
+        mean_spread_pearo: np.ndarray,
+        mean_rmse_pearo: np.ndarray,
+        mean_spread_pred: np.ndarray,
+        mean_rmse_pred: np.ndarray,
+        feature_names: List[str],
+    ) -> None:
+        # Prediction and target: (pred_steps, Nlat, Nlon, features)
+        # Iterate over variables
+        paths_dict = defaultdict(list)
+        units = [obj.dataset_info.units[name] for name in feature_names]
+        var_figs = []
+        purple_shades = ["#4b0082", "#9933cc", "#e0b3ff"]  # Light, Medium, Dark purple
+        green_shades = ["#b3ffcc", "#33cc66", "#006633"]  # Light, Medium, Dark green
+
+        for var_i, (var_name, var_unit) in enumerate(
+                zip(feature_names, units)
+            ):
+
+            plt.figure(figsize=(10, 6))
+
+            for curve in range(len(self.LT_start)):
+
+                # Plot spread-RMSE relationship for both models
+                plt.plot(mean_spread_pearo[curve, :, var_i], mean_rmse_pearo[curve, :, var_i], marker="x", label="pearo "+var_name+" LT "+str(self.LT_start[curve])+"-"+str(self.LT_end[curve]), color=green_shades[curve])
+                np.save(self.save_path / f"pearo_spread_skill_plot_per_param_{var_name}_LT_{self.LT_start[curve]}-{self.LT_end[curve]}.npy", np.array([mean_spread_pearo[curve, :, var_i], mean_rmse_pearo[curve, :, var_i]]))
+
+                # Plot spread-RMSE relationship for both models
+                plt.plot(mean_spread_pred[curve, :, var_i], mean_rmse_pred[curve, :, var_i], marker="x", label="preds "+var_name+" LT "+str(self.LT_start[curve])+"-"+str(self.LT_end[curve]), color=purple_shades[curve])
+                np.save(self.save_path / f"preds_spread_skill_plot_per_param_{var_name}_LT_{self.LT_start[curve]}-{self.LT_end[curve]}.npy", np.array([mean_spread_pred[curve, :, var_i], mean_rmse_pred[curve, :, var_i]]))
+
+            # Add perfect line y=x
+            max_value = max(np.max(mean_spread_pred[curve, :, var_i]),np.max(mean_spread_pred[curve, :, var_i]),np.max(mean_rmse_pred[curve, :, var_i]),
+                            np.max(mean_rmse_pred[curve, :, var_i]))
+
+            plt.plot([0, max_value], [0, max_value], linestyle="--", color="gray", label="Perfect")
+
+            plt.xlabel("Spread (Pixel-wise Standard Deviation across Ensemble)")
+            plt.ylabel("Skill (Pixel-wise Root Mean Squared Error)")
+            plt.title(var_name+" Spread-Skill Plot")
+            plt.grid(True, linestyle="--", alpha=0.6)
+            plt.legend()
+
+            # add figure to var_figs
+            var_figs.append(plt.gcf())
+
+        # TODO : don't create all figs at once to avoid matplotlib warning
+        tensorboard = obj.logger.experiment
+        for var_name, fig in zip(feature_names, var_figs):
+            fig_name = f"spread_skill_plot_per_param_{var_name}"
+            tensorboard.add_figure(fig_name, fig)
+            fig_full_name = f"{fig_name}.png"
+            if self.save_path is not None and self.save_path.exists():
+                dest_file = self.save_path / fig_full_name
+                paths_dict[var_name].append(dest_file)
+                dest_file.parent.mkdir(exist_ok=True)
+                fig.savefig(dest_file)
+
+            if obj.mlflow_logger:
+                run_id = obj.mlflow_logger.version
+                obj.mlflow_logger.experiment.log_figure(
+                    run_id=run_id,
+                    figure=fig,
+                    artifact_file=f"figures/{fig_full_name}",
+                )
+
+            plt.close(fig)
+
+    def plot_RSE(
+        self,
+        obj: "AutoRegressiveLightning",
+        mean_ratio_pearo: np.ndarray,
+        mean_ratio_pred: np.ndarray,
+        feature_names: List[str],
+    ) -> None:
+        # Prediction and target: (pred_steps, features)
+        # Iterate over variables
+        paths_dict = defaultdict(list)
+        units = [obj.dataset_info.units[name] for name in feature_names]
+        var_figs = []
+
+        sns.set(style="whitegrid", context="talk", font_scale=1.2)
+        plt.rcParams.update({
+            "text.usetex": False,  # Set to True if LaTeX is installed
+            "font.family": "serif",
+            "axes.labelsize": 14,
+            "axes.titlesize": 16,
+            "legend.fontsize": 12,
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12
+        })
+
+        for var_i, (var_name, var_unit) in enumerate(
+                zip(feature_names, units)
+            ):
+
+            # Plot
+            lead_times = np.arange(1, mean_ratio_pearo.shape[0] + 1)
+            plt.figure(figsize=(8, 6))
+            sns.lineplot(x=lead_times, y=mean_ratio_pred[:, var_i], marker="o", label="preds", linewidth=2.5, color="purple")
+            np.save(self.save_path / f"preds_spread_error_ratio_plot_per_param_{var_name}.npy", mean_ratio_pred[:, var_i])
+
+            # Plot
+            sns.lineplot(x=lead_times, y=mean_ratio_pearo[:, var_i], marker="o", label="pearo", linewidth=2.5, color="green")
+            np.save(self.save_path / f"pearo_spread_error_ratio_plot_per_param_{var_name}.npy", mean_ratio_pearo[:, var_i])
+
+            # Add perfect ratio reference line
+            plt.axhline(y=1, color="red", linestyle="--", linewidth=1.8, label="Perfect Ratio (1.0)")
+
+            # Labels and title
+            plt.xlabel("Lead Time")
+            plt.ylabel("Std/RMSE")
+            plt.title(f"{var_name} Spread-Error Ratio Across Forecast Lead Times")
+            plt.legend(loc="best", frameon=True)
+    
+            # Tight layout and publication-ready formatting
+            plt.tight_layout()
+
+            # add figure to var_figs
+            var_figs.append(plt.gcf())
+
+        # TODO : don't create all figs at once to avoid matplotlib warning
+        tensorboard = obj.logger.experiment
+        for var_name, fig in zip(feature_names, var_figs):
+            fig_name = f"spread_error_ratio_plot_per_param_{var_name}"
+            tensorboard.add_figure(fig_name, fig)
+            fig_full_name = f"{fig_name}.png"
+            if self.save_path is not None and self.save_path.exists():
+                dest_file = self.save_path / fig_full_name
+                paths_dict[var_name].append(dest_file)
+                dest_file.parent.mkdir(exist_ok=True)
+                fig.savefig(dest_file)
+
+            if obj.mlflow_logger:
+                run_id = obj.mlflow_logger.version
+                obj.mlflow_logger.experiment.log_figure(
+                    run_id=run_id,
+                    figure=fig,
+                    artifact_file=f"figures/{fig_full_name}",
+                )
+
+            plt.close(fig)
+
+class CRPSPlot(MapPlot):
+    """
+    Observer used to plot CRPS for each timestep.
+    """
+    def __init__(
+        self,
+        metric: Metric,
+        dataset_name: str,
+        num_samples_to_plot: int,
+        num_features_to_plot: Union[None, int] = None,
+        prefix: str = "Test",
+        save_path: Path = None,
+    ):
+        super().__init__(
+            num_samples_to_plot=num_samples_to_plot,
+            num_features_to_plot=num_features_to_plot,
+            prefix=prefix,
+            save_path=save_path,
+        )
+        self.metric = metric
+        self.dataset_name = dataset_name
+
+        self.crps_pearo = np.zeros((self.num_samples_to_plot, 44, self.num_features_to_plot))
+        self.crps_pred = np.zeros((self.num_samples_to_plot, 44, self.num_features_to_plot))
+
+        
+    def update(
+        self,
+        obj: "AutoRegressiveLightning",
+        prediction: NamedTensor,
+        target: NamedTensor,
+        
+    ) -> None:
+        """
+        Update. Should be call by "on_{training/validation/test}_step
+        """
+        # pred = prediction.clone().tensor  # In order to not modify the input
+        # targ = target.clone().tensor  # In order to not modify the input
+
+        # Here we reshape output from GNNS to be on the grid
+        if prediction.num_spatial_dims == 1:
+            prediction.tensor = einops.rearrange(
+                prediction.tensor, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
+            )
+            target.tensor = einops.rearrange(
+                target.tensor, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
+            )
+
+        if self.plotted_examples < self.num_samples_to_plot: 
+            # Rescale to original data scale
+            std = obj.stats.to_list("std", prediction.feature_names).to(
+                prediction.tensor, non_blocking=True
+            )
+            mean = obj.stats.to_list("mean", prediction.feature_names).to(
+                prediction.tensor, non_blocking=True
+            )
+            prediction_rescaled = prediction.tensor*std + mean 
+            target_rescaled = target.tensor*std + mean
+
+            self.metric.update(prediction_rescaled, target_rescaled)
+            crps_dict = self.metric.compute(num_batch=self.plotted_examples, prefix="test")
+            preds_crps = crps_dict["preds"]
+            pearo_crps = crps_dict["pearo"]
+
+
+            feature_names = (
+                prediction.feature_names[: self.num_features_to_plot]
+                if self.num_features_to_plot
+                else prediction.feature_names
+            )
+            units = [obj.dataset_info.units[name] for name in feature_names]
+
+            if obj.trainer.is_global_zero:
+
+                for var_i, (var_name, var_unit) in enumerate(zip(feature_names, units)):
+
+                    self.crps_pearo[self.plotted_examples, :, var_i] = pearo_crps[..., var_i].mean(dim=(1, 2)).cpu().numpy()
+                    self.crps_pred[self.plotted_examples, :, var_i] = preds_crps[..., var_i].mean(dim=(1, 2)).cpu().numpy()
+
+                self.plotted_examples += 1
+
+        if self.plotted_examples == self.num_samples_to_plot: # end of epoch
+
+            if obj.trainer.is_global_zero:
+
+                # Average numpy arrays over all examples
+                mean_crps_pearo = np.mean(self.crps_pearo[:self.plotted_examples], axis=0) # shape (44, self.num_features_to_plot)
+                mean_crps_preds = np.mean(self.crps_pred[:self.plotted_examples], axis=0) # shape (44, self.num_features_to_plot)
+
+            
+                # Plot figs only on main process
+                print(self.plotted_examples)
+                self.plot_map(
+                    obj,
+                    mean_crps_pearo,
+                    mean_crps_preds,
+                    feature_names,
+                )
+
+    def plot_map(
+        self,
+        obj: "AutoRegressiveLightning",
+        mean_crps_pearo: np.ndarray,  # (pred_steps, features)
+        mean_crps_preds: np.ndarray,  # (pred_steps, features)
+        feature_names: List[str],
+    ) -> None:
+
+        sns.set(style="whitegrid", context="talk", font_scale=1.2)
+        plt.rcParams.update({
+            "text.usetex": False,
+            "font.family": "serif",
+            "axes.labelsize": 14,
+            "axes.titlesize": 16,
+            "legend.fontsize": 12,
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12
+        })
+
+        paths_dict = defaultdict(list)
+        units = [obj.dataset_info.units[name] for name in feature_names]
+        var_figs = []
+
+        for var_i, (var_name, var_unit) in enumerate(zip(feature_names, units)):
+
+            lead_times = np.arange(1, mean_crps_preds.shape[0] + 1)
+            plt.figure(figsize=(8, 6))
+            sns.lineplot(x=lead_times, y=mean_crps_preds[:, var_i], marker="o", label="preds", linewidth=2.5, color="purple")
+            np.save(self.save_path / f"preds_crps_plot_per_param_{var_name}.npy", mean_crps_preds[:, var_i])
+
+            sns.lineplot(x=lead_times, y=mean_crps_pearo[:, var_i], marker="o", label="pearo", linewidth=2.5, color="green")
+            np.save(self.save_path / f"pearo_crps_plot_per_param_{var_name}.npy", mean_crps_pearo[:, var_i])
+
+            # Labels and title
+            plt.xlabel("Lead Time")
+            plt.ylabel("CRPS")
+            plt.title(f"{var_name} CRPS Across Forecast Lead Times")
+            plt.legend(loc="best", frameon=True)
+            plt.tight_layout()
+
+            var_figs.append(plt.gcf())
+        
+        # TODO : don't create all figs at once to avoid matplotlib warning
+        tensorboard = obj.logger.experiment
+        for var_name, fig in zip(feature_names, var_figs):
+            fig_name = f"crps_plot_per_param_{var_name}"
+            tensorboard.add_figure(fig_name, fig)
+            fig_full_name = f"{fig_name}.png"
+            if self.save_path is not None and self.save_path.exists():
+                dest_file = self.save_path / fig_full_name
+                paths_dict[var_name].append(dest_file)
+                dest_file.parent.mkdir(exist_ok=True)
+                fig.savefig(dest_file)
+
+            if obj.mlflow_logger:
+                run_id = obj.mlflow_logger.version
+                obj.mlflow_logger.experiment.log_figure(
+                    run_id=run_id,
+                    figure=fig,
+                    artifact_file=f"figures/{fig_full_name}",
+                )
+
+            plt.close(fig)
 
 
 class PredictionEpochPlot(MapPlot):

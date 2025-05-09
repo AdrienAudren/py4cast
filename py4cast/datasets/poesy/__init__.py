@@ -85,13 +85,13 @@ class PoesyAccessor(DataAccessor):
         var_file_name = METADATA["WEATHER_PARAMS"][param.name]["file_name"]
         return (
             SCRATCH_PATH
-            / f"{date.strftime('%Y-%m-%dT%H:%M:%SZ')}_{var_file_name}_lt1-45.npy"
-        )
+            / f"{date.strftime('%Y-%m-%dT%H:%M:%SZ')}_{var_file_name}_16.npy"          
+        )#lt1-45.npy"
 
     @classmethod
     def load_data_from_disk(
-        cls,
-        ds_name: str,
+        cls,                           
+        ds_name: str,                   
         param: WeatherParam,
         timestamps: Timestamps,
         member: int,

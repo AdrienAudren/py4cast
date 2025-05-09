@@ -1,12 +1,16 @@
 model:
   model_name: UNETRPP
   model_conf: null # Path to model_conf
-  loss_name:  afcrps #  or mae    mse mse
+  loss_name:  mse #afcrps #  or mae   
   num_inter_steps: 1 # Number of intermediary steps (without any data)
   num_samples_to_plot: 1
-  training_strategy: scaled_ar # diff_ar or 
+  training_strategy: scaled_ar #  diff_ar
   channels_last: False # True: B W H C
   io_conf : null
+  learning_rate: 1e-3
+  min_learning_rate: 3e-7
+  num_warmup_steps: 1000
+  betas: [0.9, 0.95]
   settings_init_args:
     hidden_size: 1024
     num_heads_encoder: 16
@@ -24,4 +28,5 @@ model:
     encoder_proj_sizes: [64, 64, 64, 32]
     add_skip_connections: true
     attention_code: "torch"
-    stochastic: true
+    #stochastic: false
+    #time_emb_dim: 128

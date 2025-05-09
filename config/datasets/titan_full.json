@@ -8,12 +8,14 @@
         "valid": {
             "start": 2023010103,
             "end": 2023123123,
-            "obs_step": 10800
+            "obs_step": 3600,
+            "obs_step_btw_t0": 10800
         },
         "test": {
-            "start": 2023061812,
-            "end": 2023061812,
-            "obs_step": 3600
+            "start": 2023050122,
+            "end": 2023080122,
+            "obs_step": 3600,
+            "obs_step_btw_t0": 86400
         }
     },
     "grid":{

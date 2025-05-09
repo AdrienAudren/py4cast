@@ -589,6 +589,133 @@ class MetricMapSpread(Metric):
         self.reset()
 
         return {"preds": preds_std,
-                f"{self.dataset_name}": targets_std,
+                "pearo": targets_std,
                 }
 
+class MetricRMSE(Metric):
+    """
+    Compute the root mean square error (RMSE) with TITAN test target rollout as ground truth
+    """
+
+    def __init__(self, dataset_info: DatasetInfo, pred_step: int = 0):
+        super().__init__()
+        self.pred_step = pred_step 
+        
+        self.add_state("preds", default=[], dist_reduce_fx="cat")
+        self.add_state("pearo", default=[], dist_reduce_fx="cat")
+        # dist_reduce_fx="cat" because we gather multiple batch before computing std
+
+        self.dataset_name = dataset_info.name
+
+    def update(self, pred: torch.Tensor, target: torch.Tensor, *args):
+        """
+        Assuming a batch contains the members of a same ensemble,
+        compute the spread of batch=members for both target and pred.
+        prediction/target: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
+        called at each end of step
+        """
+        if pred.shape != target.shape:
+            raise ValueError("preds and target must have the same shape")
+
+        self.preds.append(pred)
+        self.pearo.append(target)
+
+    def compute(self, num_batch, prefix: str = "val") -> dict:
+        """
+        Compute spread mean for each channels/features, return a dict.
+        Should be called at each epoch's end
+        """
+        # Ensure concatenating into a single tensor along device dimension
+        preds = dim_zero_cat(self.preds)
+        pearo = dim_zero_cat(self.pearo)
+        target = torch.from_numpy(np.load(f"/py4cast_root_dir/titan_6var/gt_titan/titan_gt_rescaled_batch_{num_batch}.npy")).to(preds.device)
+        # rmse computation
+        preds_rmse = torch.sqrt(torch.mean((preds - target) ** 2, dim=0))
+        pearo_rmse = torch.sqrt(torch.mean((pearo - target) ** 2, dim=0))
+        # Reconvert to initial type then reset metric's state
+        self.preds = []
+        self.pearo = []
+        self.reset()
+
+        return {"preds": preds_rmse,
+                "pearo": pearo_rmse,
+                }
+
+class MetricCRPS(Metric):
+    """
+    Compute the CRPS with TITAN test target rollout as ground truth
+    """
+
+    def __init__(self, dataset_info: DatasetInfo, pred_step: int = 0):
+        super().__init__()
+        self.pred_step = pred_step
+
+        self.add_state("preds", default=[], dist_reduce_fx="cat")
+        self.add_state("pearo", default=[], dist_reduce_fx="cat")
+        self.dataset_name = dataset_info.name
+
+    def update(self, pred: torch.Tensor, target: torch.Tensor, *args):
+        """
+        Assuming a batch contains the members of a same ensemble,
+        compute the spread of batch=members for both target and pred.
+        predictions: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
+        called at each end of step
+        """
+        if pred.shape != target.shape:
+            raise ValueError("preds and target must have the same shape")
+
+        self.preds.append(pred)
+        self.pearo.append(target)
+
+    def compute(self, num_batch, prefix: str = "val") -> dict:
+        """
+        Computes the CRPS score using ensemble approximation:
+        CRPS = 1/N * sum_i |x_i - y| - 0.5/N^2 * sum_{i,j} |x_i - x_j|
+        where x_i are ensemble members and y is the target.
+        Uses a for-loop to reduce GPU memory usage when computing pairwise diffs.
+        """
+        preds = dim_zero_cat(self.preds)  # (ensemble_size, pred_steps, ..., d_f)
+        pearo = dim_zero_cat(self.pearo)  # (ensemble_size, pred_steps, ..., d_f)
+        ensemble_size = preds.shape[0]
+
+        # Load full ground truth
+        target = torch.from_numpy(
+            np.load(f"/py4cast_root_dir/titan_6var/gt_titan/titan_gt_rescaled_batch_{num_batch}.npy")
+        ).to(preds.device)  # (1, pred_steps, ..., d_f)
+
+        # Expand target to match preds
+        target = target.expand_as(preds)
+
+        # Term 1: Mean absolute error between ensemble and ground truth
+        term1 = torch.mean(torch.abs(preds - target), dim=0)  # (pred_steps, ..., d_f)
+        # Term 2: Mean absolute difference between ensemble members using for-loop
+        term2 = torch.zeros_like(term1)
+        count = 0
+        for i in range(ensemble_size):
+            for j in range(i + 1, ensemble_size):
+                diff_ij = torch.abs(preds[i] - preds[j])  # (pred_steps, ..., d_f)
+                term2 += diff_ij
+                count += 1
+        term2 = term2 / count  # (pred_steps, ..., d_f)
+        preds_crps = term1 - 0.5 * term2
+
+        # Term 1: Mean absolute error between ensemble and ground truth
+        term1 = torch.mean(torch.abs(pearo - target), dim=0)  # (pred_steps, ..., d_f)
+        # Term 2: Mean absolute difference between ensemble members using for-loop
+        term2 = torch.zeros_like(term1)
+        count = 0
+        for i in range(ensemble_size):
+            for j in range(i + 1, ensemble_size):
+                diff_ij = torch.abs(pearo[i] - pearo[j])  # (pred_steps, ..., d_f)
+                term2 += diff_ij
+                count += 1
+        term2 = term2 / count  # (pred_steps, ..., d_f)
+        pearo_crps = term1 - 0.5 * term2
+
+        # Reset internal state
+        self.preds = []
+        self.pearo = []
+        self.reset()
+
+        return {"preds": preds_crps,
+                "pearo": pearo_crps} # (pred_steps, N_grid, d_f)

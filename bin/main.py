@@ -64,6 +64,10 @@ class Py4castLightningCLI(LightningCLI):
             "model.noise_strategy",
         )
         parser.link_arguments(
+            "data.shortcut_length",
+            "model.shortcut_length",
+        )
+        parser.link_arguments(
             "data.features_to_plot",
             "model.features_to_plot",
         )
