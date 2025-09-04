@@ -1,7 +1,7 @@
 # lightning.pytorch==2.4.0
 seed_everything: true
 
-ckpt_path: "/path2ckpt/epoch=240-val_mean_loss=33.44.ckpt" #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
+ckpt_path: "/path2ckpt/epoch=149-val_mean_loss=0.03.ckpt" #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
 
 # optimizer:
 #   class_path: torch.optim.AdamW
@@ -20,7 +20,7 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
 
   fast_dev_run: False  # True: fit with only 1 batch and 1 epoch, use for dev (logging & checkpointing disabled)
   num_nodes: 1         # Num of GPU nodes (1 if device=cpu)
-  max_epochs: 250
+  max_epochs: 150
   profiler: null       # Performance profiler. Possibilities are [null, simple, or specific custom class (see doc)]
 
   logger:
@@ -28,9 +28,9 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
     - class_path: lightning.pytorch.loggers.TensorBoardLogger
       init_args:
         # default_hp_metric: False # see if tensoboard still works before rm TODO
-        save_dir:   "/py4cast_root_dir/titan_6var/base"                     #titan_30varARP/ #       "/py4cast_root_dir/titan_6var/" "/py4cast_root_dir/test_metrics" # Root directory
+        save_dir:  "/py4cast_root_dir/titan_21var/afcrps_0order_5em4"                     #titan_30varARP/ #       "/py4cast_root_dir/titan_6var/" "/py4cast_root_dir/test_metrics" # Root directory
         name:                            # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
-        version:         test_poesy          # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
+        version:  test_poesy_6var # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
     # Your logs will be saved in save_dir/*name*/version/
     # (checkpoints, config.yaml, images, scores, tensorboard logs, ...)
     # Lightning automatically increments the version index of your experiment
@@ -64,16 +64,16 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
       init_args:
         monitor: val_mean_loss
         mode: min
-        patience: 100
+        patience: 250
 
   log_every_n_steps: 50        # Num of batches btw logging
   accumulate_grad_batches: 10  # Num of batches before optim step
   deterministic: False         # True for reproducibility but increases computation time
-  check_val_every_n_epoch: 1   # Number of epochs training between each validation run
+  check_val_every_n_epoch: 10   # Number of epochs training between each validation run
   precision: 32                # Numerical precision to use for model (32/16/bf16/64)
   strategy: auto               # Training strategy alias (auto, ddp, fsdp, etc)
-  accelerator: gpu            # Type of device (auto, gpu, cpu)
-  devices: auto          # Number of devices (auto or NUM)
+  accelerator: gpu           # Type of device (auto, gpu, cpu)
+  devices: auto     # Number of devices (auto or NUM)
   limit_train_batches: null    # Limit num of batches per epoch (to do very short training)
   limit_val_batches: null
   limit_test_batches: null

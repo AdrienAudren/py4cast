@@ -1,9 +1,10 @@
 import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Literal, Union
+from typing import Callable, List, Literal, Union, Optional
 
 import numpy as np
+from skimage.transform import resize
 
 from py4cast.datasets.access import (
     DataAccessor,
@@ -67,9 +68,38 @@ class PoesyAccessor(DataAccessor):
         grib_param = None
         return ParamConfig(unit, level_type, long_name, grid, grib_name, grib_param)
 
-    @staticmethod
-    def get_grid_coords(param: WeatherParam) -> List[float]:
-        raise NotImplementedError("Poesy does not require get_grid_coords")
+    @classmethod
+    def get_grid_coords(cls, param: WeatherParam, grid: str = None) -> List[int]:
+        """
+        Get the grid coordinates for a given parameter and grid.
+        If no grid is specified, the native grid of the parameter is used.
+        """
+        if grid is not None:
+            if grid not in METADATA["GRIDS"]:
+                raise ValueError(f"Grid {grid} not found in metadata.")
+            return METADATA["GRIDS"][grid]["extent"]
+        else:
+            if param.native_grid not in METADATA["GRIDS"]:
+                raise ValueError(
+                    f"Native grid {param.native_grid} not found in metadata."
+                )
+            return METADATA["GRIDS"][param.native_grid]["extent"]
+
+    @classmethod
+    def get_grid_size(cls, param: WeatherParam, grid: str = None) -> List[int]:
+        """
+        Get the grid size for a given parameter and grid.
+        """
+        if grid is not None:
+            if grid not in METADATA["GRIDS"]:
+                raise ValueError(f"Grid {grid} not found in metadata.")
+            return METADATA["GRIDS"][grid]["size"]
+        else:
+            if param.native_grid not in METADATA["GRIDS"]:
+                raise ValueError(
+                    f"Native grid {param.native_grid} not found in metadata."
+                )
+            return METADATA["GRIDS"][param.native_grid]["size"]
 
     @classmethod
     def get_filepath(
@@ -82,11 +112,18 @@ class PoesyAccessor(DataAccessor):
         """
         Return the filename.
         """
-        var_file_name = METADATA["WEATHER_PARAMS"][param.name]["file_name"]
-        return (
+        # var_file_name = METADATA["WEATHER_PARAMS"][param.name]["file_name"]
+        var_file_name = cls.parameter_namer(param)
+        if param.kind == "input":
+            return (
+            SCRATCH_PATH
+            / f"{date.strftime('%Y-%m-%dT18:00:00Z')}_{var_file_name}_16.npy"          
+            )
+        else:
+            return (
             SCRATCH_PATH
             / f"{date.strftime('%Y-%m-%dT%H:%M:%SZ')}_{var_file_name}_16.npy"          
-        )#lt1-45.npy"
+            )#lt1-45.npy"
 
     @classmethod
     def load_data_from_disk(
@@ -96,17 +133,33 @@ class PoesyAccessor(DataAccessor):
         timestamps: Timestamps,
         member: int,
         file_format: str = "npy",
+        num_input_steps: int = 1,
     ) -> np.array:
         data_array = np.load(
             cls.get_filepath(ds_name, param, timestamps.datetime), mmap_mode="r"
         )
+        if param.kind == "input":
+            grid_coords = cls.get_grid_coords(param)
+            grid_size = cls.get_grid_size(param)
+            lons = np.linspace(grid_coords[2], grid_coords[3], grid_size[1])
+            lats = np.linspace(grid_coords[1], grid_coords[0], grid_size[0])
 
-        arr = data_array[
-            param.grid.subdomain[0] : param.grid.subdomain[1],
-            param.grid.subdomain[2] : param.grid.subdomain[3],
-            (np.array(timestamps.timedeltas) / dt.timedelta(hours=1)).astype(int) - 1,
-            member,
-        ].transpose([2, 0, 1])
+            data_array = cls.fit_to_grid(param, data_array, lons, lats)
+            data_array = data_array[:,:,3:,:]  # PEARP starts at 18:OO UTC and PEARO at 21:00 UTC
+            arr = data_array[
+                :,
+                :,
+                (np.array(timestamps.timedeltas) / dt.timedelta(hours=1)).astype(int) - 1,
+                member,
+            ].transpose([2, 0, 1])
+
+        else:
+            arr = data_array[
+                param.grid.subdomain[0] : param.grid.subdomain[1],
+                param.grid.subdomain[2] : param.grid.subdomain[3],
+                (np.array(timestamps.timedeltas) / dt.timedelta(hours=1)).astype(int) - 1,
+                member,
+            ].transpose([2, 0, 1])
 
         return np.expand_dims(arr, -1)
 
@@ -117,6 +170,7 @@ class PoesyAccessor(DataAccessor):
         param: WeatherParam,
         timestamps: Timestamps,
         file_format: str = "npy",
+        num_input_steps: int=1,
     ) -> bool:
         filepath = cls.get_filepath(ds_name, param, timestamps.datetime, file_format)
         if not filepath.exists():
@@ -168,3 +222,23 @@ class PoesyAccessor(DataAccessor):
             return False
 
         return True
+
+    @classmethod
+    def fit_to_grid(
+        cls,
+        param: WeatherParam,
+        arr: np.ndarray,
+        lons: np.ndarray,
+        lats: np.ndarray,
+    ) -> np.ndarray:
+        # crop arpege data to arome domain:
+        grid_coords = cls.get_grid_coords(param, grid="EURW1S40")
+        # Mask ARPEGE data to AROME bounding box
+        mask_lon = (lons >= grid_coords[2]) & (lons <= grid_coords[3])
+        mask_lat = (lats >= grid_coords[1]) & (lats <= grid_coords[0])
+        arr = arr[mask_lat, :][:, mask_lon]
+ 
+        nX = param.grid.subdomain[1] - param.grid.subdomain[0]
+        nY = param.grid.subdomain[3] - param.grid.subdomain[2]
+        # upscale or downscale to grid resolution:
+        return resize(arr, (nX,nY, arr.shape[2], arr.shape[3]), anti_aliasing=False)

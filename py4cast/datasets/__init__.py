@@ -66,6 +66,8 @@ def get_datasets(
     num_pred_steps_val_test: int,
     noise_members: int,
     noise_strategy: Literal["forcing", "stochastic_EPA"],
+    dynamical_downscaling: bool = False,
+    shortcut_length: Union[int, None] = None,
     config_file: Union[str, None] = None,
     config_override: Union[Dict, None] = None,
 ) -> Tuple[DatasetABC, DatasetABC, DatasetABC]:
@@ -99,5 +101,7 @@ def get_datasets(
         num_pred_steps_val_test,
         noise_members,
         noise_strategy,
+        dynamical_downscaling,
+        shortcut_length,
         config_override,
     )

@@ -68,6 +68,10 @@ class Py4castLightningCLI(LightningCLI):
             "model.shortcut_length",
         )
         parser.link_arguments(
+            "data.dynamical_downscaling",
+            "model.dynamical_downscaling",
+        )
+        parser.link_arguments(
             "data.features_to_plot",
             "model.features_to_plot",
         )

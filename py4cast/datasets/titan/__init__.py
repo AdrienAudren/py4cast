@@ -117,6 +117,7 @@ class TitanAccessor(DataAccessor):
         # the member parameter is not accessed if irrelevant
         member: int = 0,
         file_format: Literal["npy", "grib"] = "grib",
+        num_input_steps: int = 1,
     ):
         """
         Function to load invidiual parameter and lead time from a file stored in disk
@@ -142,12 +143,22 @@ class TitanAccessor(DataAccessor):
         param: WeatherParam,
         timestamps: Timestamps,
         file_format: Literal["npy", "grib"] = "grib",
+        num_input_steps: int = 1,
     ) -> bool:
-        for date in timestamps.validity_times:
-            filepath = self.get_filepath(ds_name, param, date, file_format)
-            if not filepath.exists():
-                return False
-        return True
+        if param.kind == "input":
+            for date in timestamps.validity_times[num_input_steps:]:
+                filepath = self.get_filepath(ds_name, param, date, file_format)
+                if not filepath.exists():
+                    return False
+            return True
+        else:
+            for date in timestamps.validity_times:
+                filepath = self.get_filepath(ds_name, param, date, file_format)
+                if not filepath.exists():
+                    return False
+            return True
+        
+        
 
     @staticmethod
     def parameter_namer(param: WeatherParam) -> str:

@@ -10,10 +10,10 @@
         },
         "test": {
             "start": 20230501,
-            "end": 20230503,
+            "end": 20230801,
             "refcst_daily_runs": [75600],
             "refcst_leadtime_start_in_sec": 3600,
-            "refcst_leadtime_end_in_sec": 162000,
+            "refcst_leadtime_end_in_sec": 7200,
             "refcst_leadtime_step_in_sec": 3600
         },
         "valid": {
@@ -37,29 +37,57 @@
         "file_format": "npy"
     },
     "params": {
-        "aro_t2m": {
+        "pearo_t2m": {
             "levels": [2],
             "kind": "input_output"
         },
-        "aro_u10": {
-            "levels": [10],
+        "pearo_r2": {
+            "levels": [2],
             "kind": "input_output"
         },
-        "aro_v10": {
-            "levels": [10],
-            "kind": "input_output"
-        },
-        "aro_tp": {
+        "pearo_tp": {
             "levels": [0],
             "kind": "input_output"
         },
-        "aro_t": {
-            "levels": [850],
+        "pearo_u10": {
+            "levels": [10],
             "kind": "input_output"
         },
-        "aro_z": {
-            "levels": [500],
+        "pearo_v10": {
+            "levels": [10],
             "kind": "input_output"
+        },
+        "pearo_t": {
+            "levels": [250, 500, 700, 850],
+            "kind": "input_output"
+        },
+        "pearo_u": {
+            "levels": [250, 500, 700, 850],
+            "kind": "input_output"
+        },
+        "pearo_v": {
+            "levels": [250, 500, 700, 850],
+            "kind": "input_output"
+        },
+        "pearo_z": {
+            "levels": [250, 500, 700, 850],
+            "kind": "input_output"
+        },
+        "pearp_t": {
+            "levels": [250, 500, 700, 850],
+            "kind": "input"
+        },
+        "pearp_u":{
+            "levels": [250, 500, 700, 850],
+            "kind": "input"
+        },
+        "pearp_v":{
+            "levels": [250, 500, 700, 850],
+            "kind": "input"
+        },
+        "pearp_z":{
+            "levels": [250, 500, 700, 850],
+            "kind": "input"
         }
     },
     "members": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]

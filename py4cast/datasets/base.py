@@ -90,17 +90,17 @@ class Item:
         Checks that the dimensions of the inputs, outputs are consistent.
         This is necessary for our auto-regressive training.
         """
-        if self.inputs.names != self.outputs.names:
-            raise ValueError(
-                f"Inputs and outputs must have the same dim names, got {self.inputs.names} and {self.outputs.names}"
-            )
+        # if self.inputs.names != self.outputs.names:
+        #     raise ValueError(
+        #         f"Inputs and outputs must have the same dim names, got {self.inputs.names} and {self.outputs.names}"
+        #     )
 
-        # Also check feature names
-        if self.inputs.feature_names != self.outputs.feature_names:
-            raise ValueError(
-                f"Inputs and outputs must have the same feature names, "
-                f"got {self.inputs.feature_names} and {self.outputs.feature_names}"
-            )
+        # # Also check feature names
+        # if self.inputs.feature_names != self.outputs.feature_names:
+        #     raise ValueError(
+        #         f"Inputs and outputs must have the same feature names, "
+        #         f"got {self.inputs.feature_names} and {self.outputs.feature_names}"
+        #     )
 
     def __str__(self) -> str:
         """
@@ -273,6 +273,7 @@ class DatasetInfo:
     statics: Statics  # A lot of static variables
     stats: Stats
     diff_stats: Stats
+    multi_scale_stats: Stats
     state_weights: Dict[str, float]
     shortnames: Dict[str, List[str]] = None
 
@@ -393,7 +394,7 @@ class Sample:
 
         self.output_timestamps = Timestamps(
             datetime=self.timestamps.datetime,
-            timedeltas=self.timestamps.timedeltas[self.settings.num_input_steps :],
+            timedeltas=self.timestamps.timedeltas[self.settings.num_input_steps:],  
         )
 
     def __repr__(self):
@@ -406,6 +407,7 @@ class Sample:
                 param=param,
                 timestamps=self.timestamps,
                 file_format=self.settings.file_format,
+                num_input_steps=self.settings.num_input_steps,
             ):
                 return False
         return True
@@ -425,13 +427,21 @@ class Sample:
             timestamps,
             self.member,
             self.settings.file_format,
+            self.settings.num_input_steps,
         )
 
         if standardize:
-            name = self.accessor.parameter_namer(param)
-            means = np.asarray(self.stats[name]["mean"])
-            std = np.asarray(self.stats[name]["std"])
-            arr = (arr - means) / std
+            if self.settings.noise_strategy == "ddim":
+                name = self.accessor.parameter_namer(param)
+                # For diffusion, data is re-scaled to the range [-1, 1]
+                arr = (2*(arr - np.asarray(self.stats[name]["min"]))) / (
+                    np.asarray(self.stats[name]["max"]) - np.asarray(self.stats[name]["min"])
+                )-1
+            else:
+                name = self.accessor.parameter_namer(param)
+                means = np.asarray(self.stats[name]["mean"])
+                std = np.asarray(self.stats[name]["std"])
+                arr = (arr - means) / std
 
         return torch.from_numpy(arr)
 
@@ -499,8 +509,9 @@ class Sample:
 
         for forcing in external_forcings:
             forcing.unsqueeze_and_expand_from_(linputs[0])
-        lforcings = lforcings + external_forcings
 
+        lforcings = lforcings + external_forcings
+            
         return Item(
             inputs=NamedTensor.concat(linputs),
             outputs=NamedTensor.concat(loutputs),
@@ -651,6 +662,7 @@ class DatasetABC(Dataset):
             statics=self.statics,
             stats=self.stats,
             diff_stats=self.diff_stats,
+            multi_scale_stats=self.multi_scale_stats,
             state_weights=self.state_weights,
         )
 
@@ -677,7 +689,6 @@ class DatasetABC(Dataset):
                     )
                 ]
                 timestamps.append(Timestamps(datetime=t0, timedeltas=timesteps))
-
         samples = []
         invalid_samples = 0
         for ts in tqdm(
@@ -747,6 +758,8 @@ class DatasetABC(Dataset):
         for param in self.params:
             if param.kind == "input":
                 res += 1
+            # elif param.kind == "input_output":
+            #     res += 1
         return res
 
     @cached_property
@@ -813,7 +826,16 @@ class DatasetABC(Dataset):
 
     @cached_property
     def diff_stats(self) -> Stats:
-        return Stats(fname=self.cache_dir / "diff_stats.pt")
+        if self.settings.dynamical_downscaling:
+            # return Stats(fname=self.cache_dir / "diff_stats_ARP.pt")
+            return Stats(fname=self.cache_dir / "diff_stats.pt")
+        else:
+            # return Stats(fname=self.cache_dir / "diff_stats_1order_center.pt")
+            return Stats(fname=self.cache_dir / "diff_stats.pt")
+    
+    @cached_property
+    def multi_scale_stats(self) -> Stats:
+        return Stats(fname=self.cache_dir / "multi_scale_gk_stats.pt")
 
     def shortnames(
         self,
@@ -864,7 +886,9 @@ class DatasetABC(Dataset):
         num_pred_steps_train: int,
         num_pred_steps_val_test: int,
         noise_members: int,
-        noise_strategy: Literal["forcing", "stochastic_EPA"],
+        noise_strategy: Literal["forcing", "stochastic_EPA", "ddim"],
+        dynamical_downscaling: bool = False,
+        shortcut_length: int = None,
     ) -> Tuple[Type["DatasetABC"], Type["DatasetABC"], Type["DatasetABC"]]:
         grid = Grid(load_grid_info_func=accessor_kls.load_grid_info, **conf["grid"])
 
@@ -882,6 +906,8 @@ class DatasetABC(Dataset):
             members=members,
             noise_members=noise_members,
             noise_strategy=noise_strategy,
+            dynamical_downscaling=dynamical_downscaling,
+            shortcut_length=shortcut_length,
             **conf["settings"],
         )
         train_period = Period(**conf["periods"]["train"], name="train")
@@ -896,6 +922,8 @@ class DatasetABC(Dataset):
             members=members,
             noise_members=noise_members,
             noise_strategy=noise_strategy,
+            dynamical_downscaling=dynamical_downscaling,
+            shortcut_length=shortcut_length,
             **conf["settings"],
         )
         valid_period = Period(**conf["periods"]["valid"], name="valid")
@@ -919,7 +947,9 @@ class DatasetABC(Dataset):
         num_pred_steps_train: int,
         num_pred_steps_val_tests: int,
         noise_members: int,
-        noise_strategy: Literal["forcing", "stochastic_EPA"],
+        noise_strategy: Literal["forcing", "stochastic_EPA", "ddim"],
+        dynamical_downscaling: bool = False,
+        shortcut_length: int = None,
         config_override: Union[Dict, None] = None,
     ) -> Tuple[Type["DatasetABC"], Type["DatasetABC"], Type["DatasetABC"]]:
         """
@@ -942,4 +972,6 @@ class DatasetABC(Dataset):
             num_pred_steps_val_tests,
             noise_members,
             noise_strategy,
+            dynamical_downscaling,
+            shortcut_length
         )

@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 from typing import Dict, List, Literal, Tuple, Union
-
+from skimage.metrics import structural_similarity as ssim
+from skimage.transform import resize
 import einops
 import matplotlib
 import mlflow.pytorch
@@ -27,13 +28,15 @@ from transformers.optimization import get_cosine_with_min_lr_schedule_with_warmu
 from py4cast.datasets import get_datasets
 from py4cast.datasets.base import DatasetInfo, ItemBatch, NamedTensor, Statics
 from py4cast.io.outputs import GribSavingSettings, save_named_tensors_to_grib
-from py4cast.losses import ScaledLoss, WeightedLoss
-from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDVar, MetricSpread, MetricMapSpread, MetricRMSE, MetricCRPS
+from py4cast.losses import ScaledLoss, WeightedLoss, MultiScaleLoss
+from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDKdownscaling, MetricPSDVar, MetricSpread, MetricMapSpread, MetricSquaredSkill, MetricUnbiasedVariance, MetricCRPS
 from py4cast.models import build_model_from_settings, get_model_kls_and_settings
 from py4cast.models import registry as model_registry
 from py4cast.plots import (
     PredictionEpochPlot,
     PredictionTimestepPlot,
+    DownscalingPredictionTimestepPlot,
+    DownscalingPredictionEpochPlot,
     SpreadTimestepPlot,
     SpreadSkillPlot,
     CRPSPlot,
@@ -44,7 +47,9 @@ from py4cast.utils import str_to_dtype
 
 import numpy as np
 
-PLOT_PERIOD: int = 10
+PLOT_PERIOD: int = 1
+
+TIMESTEPS: int = 1000 
 
 
 @dataclass
@@ -67,8 +72,9 @@ class PlDataModule(LightningDataModule):
         predict_conf: Dict | None = None,
         ensemble_metrics: bool = False,
         noise_members: int = 0,
-        noise_strategy: Literal["forcing", "stochastic_EPA"] = "forcing",
+        noise_strategy: Literal["forcing", "stochastic_EPA", "ddim", "CondLayerNorm"] = "forcing",
         shortcut_length: int = None,
+        dynamical_downscaling: bool = False,
         features_to_plot: List[str] = ["t2m"],
     ):
         super().__init__()
@@ -82,6 +88,7 @@ class PlDataModule(LightningDataModule):
         self.noise_members = noise_members
         self.noise_strategy = noise_strategy
         self.shortcut_length = shortcut_length
+        self.dynamical_downscaling = dynamical_downscaling
         self.ensemble_metrics = ensemble_metrics
         self.features_to_plot = features_to_plot
 
@@ -94,6 +101,8 @@ class PlDataModule(LightningDataModule):
             num_pred_steps_val_test,
             noise_members,
             noise_strategy,
+            dynamical_downscaling,
+            shortcut_length,
             dataset_conf,
             predict_conf,
         )
@@ -183,8 +192,9 @@ class AutoRegressiveLightning(LightningModule):
         num_pred_steps_val_test: int = 1,
         batch_size: int = 2,
         noise_members: int = 0,
-        noise_strategy: Literal["forcing", "stochastic_EPA"] = "forcing",
+        noise_strategy: Literal["forcing", "stochastic_EPA", "ddim", "CondLayerNorm"] = "forcing",
         shortcut_length: int = None,
+        dynamical_downscaling: bool = False,
         ensemble_metrics: bool = False,
         features_to_plot: List[str] = ["t2m"],
         # non-linked args
@@ -214,6 +224,7 @@ class AutoRegressiveLightning(LightningModule):
         self.noise_members = noise_members
         self.noise_strategy = noise_strategy
         self.shortcut_length = shortcut_length
+        self.dynamical_downscaling = dynamical_downscaling
         self.ensemble_metrics = ensemble_metrics
         self.features_to_plot = features_to_plot
         self.model_conf = model_conf
@@ -322,10 +333,12 @@ class AutoRegressiveLightning(LightningModule):
         # MSE loss, need to do reduction ourselves to get proper weighting
         if loss_name == "mse":
             self.loss = WeightedLoss("MSELoss", reduction="none")
+            # self.loss = MultiScaleLoss("MSELoss", reduction="none")
         elif loss_name == "mae":
             self.loss = WeightedLoss("L1Loss", reduction="none")
         elif loss_name == "afcrps":
-            self.loss = WeightedLoss("AFCRPS", reduction="none")
+            # self.loss = WeightedLoss("AFCRPS", reduction="none")
+            self.loss = MultiScaleLoss("AFCRPS", reduction="none")
         else:
             raise TypeError(f"Unknown loss function: {loss_name}")
         self.loss.prepare(self, statics.interior_mask, dataset_info)
@@ -338,10 +351,12 @@ class AutoRegressiveLightning(LightningModule):
             max_pred_step = self.num_pred_steps_val_test - 1
             self.rmse_psd_plot_metric = MetricPSDVar(pred_step=max_pred_step)
             self.psd_plot_metric = MetricPSDK(self.save_path, pred_step=max_pred_step)
+            self.downscale_psd_plot_metric = MetricPSDKdownscaling(self.save_path, pred_step=max_pred_step)
             self.acc_metric = MetricACC(self.dataset_info)
             self.spread_metric = MetricSpread(self.dataset_info, pred_step=max_pred_step+1)
             self.spread_map_metric = MetricMapSpread(self.dataset_info, pred_step=max_pred_step+1)
-            self.rmse_metric = MetricRMSE(self.dataset_info, pred_step=max_pred_step+1)
+            self.skill_metric = MetricSquaredSkill(self.dataset_info, pred_step=max_pred_step+1)
+            self.unbVar_metric = MetricUnbiasedVariance(self.dataset_info, pred_step=max_pred_step+1)
             self.crps_metric = MetricCRPS(self.dataset_info, pred_step=max_pred_step+1)
             self.configure_loggers()
 
@@ -450,8 +465,71 @@ class AutoRegressiveLightning(LightningModule):
             },
         }
 
+    def forward_noising(
+        self, x_0: torch.Tensor, t: torch.Tensor
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+        beta = torch.linspace(0.0001, 0.02, TIMESTEPS)
+        alpha = 1 - beta
+        alpha_bar = torch.cumprod(alpha, dim=0)
+        alpha_bar = torch.cat((torch.tensor([1.], device=beta.device), alpha_bar[:-1]), dim=0)
+        sqrt_alpha_bar = torch.sqrt(alpha_bar)
+        one_minus_sqrt_alpha_bar = torch.sqrt(1 - alpha_bar)
+        
+        noise = torch.randn_like(x_0)
+        # indexing with t
+        sqrt_alpha_bar_t = sqrt_alpha_bar[t].view(-1, 1, 1, 1)
+        one_minus_sqrt_alpha_bar_t = one_minus_sqrt_alpha_bar[t].view(-1, 1, 1, 1)
+        
+        noisy_image = sqrt_alpha_bar_t * x_0 + one_minus_sqrt_alpha_bar_t * noise
+        snr = alpha_bar[t] / (1 - alpha_bar[t])
+        return noisy_image, noise, snr
+
+    def compute_snr(
+        self, t: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute the SNR for the given timestep t.
+        """
+        beta = torch.linspace(0.0001, 0.02, TIMESTEPS)
+        alpha = 1 - beta
+        alpha_bar = torch.cumprod(alpha, dim=0)
+        alpha_bar = torch.cat((torch.tensor([1.], device=beta.device), alpha_bar[:-1]), dim=0)
+        sqrt_alpha_bar = torch.sqrt(alpha_bar)
+        one_minus_sqrt_alpha_bar = torch.sqrt(1 - alpha_bar)
+
+        alpha_bar_t = alpha_bar[t]
+        return alpha_bar_t / (1 - alpha_bar_t)
+    
+
+    def backward_denoising_ddim(
+        self, x_t: torch.Tensor, pred_x: torch.Tensor, t: int, eta: float = 0.0
+        ) -> torch.Tensor:
+
+        t = torch.full((x_t.shape[0],1,1,1), t, dtype=torch.int64, device="cpu")
+        beta = torch.linspace(0.0001, 0.02, TIMESTEPS)
+        alpha = 1 - beta
+        alpha_bar = torch.cumprod(alpha, dim=0)
+        alpha_bar = torch.cat((torch.tensor([1.], device=beta.device), alpha_bar[:-1]), dim=0)
+        sqrt_alpha_bar = torch.sqrt(alpha_bar)
+        one_minus_sqrt_alpha_bar = torch.sqrt(1 - alpha_bar)
+
+        alpha_bar_t = alpha_bar[t]
+        alpha_t_minus_one = alpha[t - 1]
+
+        sigma_t = torch.sqrt(beta[t] * (1 - alpha_bar[t - 1]) / (1 - alpha_bar_t)) * eta
+
+        pred = torch.sqrt(alpha_t_minus_one) * pred_x
+        pred_noise = (x_t - torch.sqrt(alpha_bar_t) * pred_x) / torch.sqrt(1 - alpha_bar_t)
+        pred = pred + torch.sqrt(1 - alpha_t_minus_one - sigma_t ** 2) * pred_noise
+
+        eps_t = torch.randn_like(x_t)
+        pred = pred + sigma_t * eps_t
+
+        return pred
+
     def _next_x(
-        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int, t: int = None, dt: float = None, st: NamedTensor = None
+        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int, t: int = None, dt: float = None, st: torch.Tensor = None, ft: torch.Tensor = None
     ) -> torch.Tensor:
         """
         Build the next x input for the model at timestep step_idx using the :
@@ -459,7 +537,67 @@ class AutoRegressiveLightning(LightningModule):
         - forcing
         - static features
         """
+        num_dynamic_features = batch.inputs.dim_size("features")
+        step_diff_std, step_diff_mean = self._step_diffs(
+                    (batch.outputs.feature_names),
+                    prev_states.device,
+                )
         forcing = batch.forcing.select_dim("timestep", step_idx, bare_tensor=False)
+        forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
+        forcing_tobedownscaled = forcing_tensor[...,:num_dynamic_features]
+        external_forcings = forcing_tensor[...,num_dynamic_features:]
+        # residual = batch.outputs.select_dim("timestep", 0) - forcing_tobedownscaled
+        # scaled_residual = (residual - step_diff_mean) / step_diff_std
+
+        # # Get shape
+        # B, N_lat, N_lon, d_f = prev_states.select_dim("timestep", 0).shape
+
+        # # Select timestep 0 and keep on GPU
+        # aro_t = prev_states.select_dim("timestep", 0)  # shape: (B, N_lat, N_lon, d_f)
+
+        # # Rearrange to (B, d_f, N_lat, N_lon) for interpolation
+        # aro_t = aro_t.permute(0, 3, 1, 2)  # (B, d_f, H, W)
+
+        # # Compute low-res dimensions
+        # N_lat_low = N_lat // 10
+        # N_lon_low = N_lon // 10
+
+        # # Downsample
+        # aro_t_lowres = torch.nn.functional.interpolate(
+        #     aro_t, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
+        # )
+
+        # # Upsample back to original resolution
+        # aro_t_upsampled = torch.nn.functional.interpolate(
+        #     aro_t_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
+        # )
+
+        # # Rearrange back to (B, N_lat, N_lon, d_f)
+        # aro_t_upsampled_tensor = aro_t_upsampled.permute(0, 2, 3, 1)  # shape: (B, N_lat, N_lon, d_f)
+
+
+        # # Get shape
+        # B, N_lat, N_lon, d_f = forcing_tobedownscaled.shape
+
+        # # Rearrange to (B, d_f, N_lat, N_lon) for interpolation
+        # forcing_tobedownscaled = forcing_tobedownscaled.permute(0, 3, 1, 2)  # (B, d_f, H, W)
+
+        # # Compute low-res dimensions
+        # N_lat_low = N_lat // 10
+        # N_lon_low = N_lon // 10
+
+        # # Downsample
+        # forcing_tobedownscaled_lowres = torch.nn.functional.interpolate(
+        #     forcing_tobedownscaled, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
+        # )
+
+        # # Upsample back to original resolution
+        # forcing_tobedownscaled_upsampled = torch.nn.functional.interpolate(
+        #     forcing_tobedownscaled_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
+        # )
+
+        # # Rearrange back to (B, N_lat, N_lon, d_f)
+        # forcing_tobedownscaled_upsampled_tensor = forcing_tobedownscaled_upsampled.permute(0, 2, 3, 1)  # shape: (B, N_lat, N_lon, d_f)
 
         if t is not None:
             t = t.view(t.shape[0], 1, 1, 1)
@@ -468,47 +606,166 @@ class AutoRegressiveLightning(LightningModule):
 
         if t is not None and dt is not None:
             # Needs to return x(t+dt) for s(t+dt) compute
-            x = torch.cat(
-            [
-                (1-t)*prev_states.select_dim("timestep", idx) + t*batch.outputs.select_dim("timestep", idx) + st*dt
-                for idx in range(batch.num_input_steps)
-            ]
-            + [self.grid_static_features[: batch.batch_size], forcing.tensor],
-            dim=forcing.dim_index("features"),
-            )
+            if self.dynamical_downscaling: # and ft is not None:
+                # x = torch.cat(
+                # [
+                #     torch.clip((1- (1 - 1e-5) * t)*ft + t*scaled_residual + st*dt, -4, 4)    # from gaussian to aro_t+1
+                # ]
+                # + [self.grid_static_features[: batch.batch_size]]
+                # + [
+                #     prev_states.select_dim("timestep", idx)   # aro_t as a forcing
+                #     for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
+                # ]
+                # + [forcing_tensor],
+                # dim=forcing.dim_index("features"),
+                # )
+                x = torch.cat(
+                [
+                    torch.clip((1- (1 - 1e-5) * t)*prev_states.select_dim("timestep", 0) + t*batch.outputs.select_dim("timestep", 0) + st*dt, -4, 4)    # from arp_t+1 to aro_t+1
+                ]
+                + [self.grid_static_features[: batch.batch_size]] 
+                +
+                [
+                    prev_states.select_dim("timestep", idx)   # aro_t as a forcing
+                    for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
+                ]
+                + [forcing_tensor],
+                dim=forcing.dim_index("features"),
+                )
+            else:
+                x = torch.cat(
+                [                                                                                                     # from aro_t to aro_t+1
+                    (1- (1 - 1e-5) * t)*prev_states.select_dim("timestep", 0) + t*batch.outputs.select_dim("timestep", 0) + st*dt   # using multi input steps doesn't make sense here 
+                ]                                                                                                     # because we always predict only one step ahead
+                + [self.grid_static_features[: batch.batch_size], forcing_tensor],                                           # x(t) has size of one step too and x0 so	
+                dim=forcing.dim_index("features"),
+                )
         
         elif t is not None and dt is None:
             # Needs to return x(t) for s(t) compute
-            x = torch.cat(
-            [
-                (1-t)*prev_states.select_dim("timestep", idx) + t*batch.outputs.select_dim("timestep", idx)
-                for idx in range(batch.num_input_steps)
-            ]
-            + [self.grid_static_features[: batch.batch_size], forcing.tensor],
-            dim=forcing.dim_index("features"),
-            )
+
+            if self.dynamical_downscaling: # and ft is not None:
+                # x = torch.cat(
+                # [
+                #     (1- (1 - 1e-5) * t)*ft + t*scaled_residual   # from gaussian ft~N(0,I) to aro_t+1 - arp_t+1
+                # ]
+                # + [self.grid_static_features[: batch.batch_size]] 
+                # + [
+                #     prev_states.select_dim("timestep", idx)   # aro_t as a forcing
+                #     for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
+                # ]
+                # + [forcing_tensor],
+                # dim=forcing.dim_index("features"),
+                # )
+                x = torch.cat(
+                [
+                    (1- (1 - 1e-5) * t)*prev_states.select_dim("timestep", 0) + t*batch.outputs.select_dim("timestep", 0) # from arp_t+1 to aro_t+1
+                ]
+                + [self.grid_static_features[: batch.batch_size]] 
+                +
+                [
+                    prev_states.select_dim("timestep", idx)   # aro_t as a forcing
+                    for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
+                ]
+                + [forcing_tensor],
+                dim=forcing.dim_index("features"),
+                )
+            else:
+                x = torch.cat(
+                [                                                                                              # from aro_t to aro_t+1
+                    (1- (1 - 1e-5) * t)*prev_states.select_dim("timestep", 0) + t*batch.outputs.select_dim("timestep", 0)    # using multi input steps doesn't make sense here 
+                ]                                                                                              # because we always predict only one step ahead
+                + [self.grid_static_features[: batch.batch_size], forcing_tensor],                                    # x(t) has size of one step too and x0 so	
+                dim=forcing.dim_index("features"),
+                )
         
         elif t is None and dt is not None:
             # Needs to return x(t+dt) for "sampling"
-            x = torch.cat(
-            [
-                prev_states.select_dim("timestep", idx) + st*dt
-                for idx in range(batch.num_input_steps)
-            ]
-            + [self.grid_static_features[: batch.batch_size], forcing.tensor],
-            dim=forcing.dim_index("features"),
-            )
+            
+            if self.dynamical_downscaling and ft is not None:
+                # x = torch.cat(
+                # [
+                #     ft + st*dt # from arp_t+1 to aro_t+1
+                # ]
+                # + [self.grid_static_features[: batch.batch_size]] 
+                # + [
+                #     prev_states.select_dim("timestep", idx)   # aro_t as a forcing
+                #     for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
+                # ]
+                # + [forcing_tensor],  
+                # dim=forcing.dim_index("features"),
+                # )
+                x = torch.cat(
+                [
+                    ft + st*dt # from arp_t+1 to aro_t+1
+                ]
+                + [self.grid_static_features[: batch.batch_size]] 
+                +
+                [
+                    prev_states.select_dim("timestep", idx)   # aro_t as a forcing
+                    for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
+                ]
+                + [forcing_tensor],  
+                dim=forcing.dim_index("features"),
+                )
+
+            else:
+                x = torch.cat(
+                [
+                    prev_states.select_dim("timestep", 0) + st*dt                 # from aro_t to aro_t+1
+                ]                                                                 # using multi input steps doesn't make sense here
+                + [self.grid_static_features[: batch.batch_size], forcing_tensor],       # because we always predict only one step ahead
+                dim=forcing.dim_index("features"),                                # x(t) has size of one step too and x0 so
+                )
 
         else:
-            # Default case, not flow matching training 
-            x = torch.cat(
+            # Default case, not training, sampling only 
+            if self.dynamical_downscaling:
+                # x = torch.cat(
+                # [
+                #     torch.randn_like(forcing_tobedownscaled)  # starts from gaussian prior 
+                # ]
+                # + [self.grid_static_features[: batch.batch_size]] 
+                # + [
+                #     prev_states.select_dim("timestep", idx)   # aro_t as a forcing
+                #     for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
+                # ]
+                # + [forcing_tensor],  
+                # dim=forcing.dim_index("features"),
+                # )
+                x = torch.cat(
                 [
-                    prev_states.select_dim("timestep", idx)
-                    for idx in range(batch.num_input_steps)
+                    prev_states.select_dim("timestep", 0)  # starts from prior arp_t+1
                 ]
-                + [self.grid_static_features[: batch.batch_size], forcing.tensor],
+                + [self.grid_static_features[: batch.batch_size]] 
+                +
+                [
+                    prev_states.select_dim("timestep", idx)   # aro_t as a forcing
+                    for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
+                ]
+                + [forcing_tensor],  
                 dim=forcing.dim_index("features"),
-            )
+                )
+            
+            else:
+                x = torch.cat(
+                    [
+                        prev_states.select_dim("timestep", idx)
+                        for idx in range(batch.num_input_steps)    # pay attention here, for flow matching multi input steps shouldn't be allowed for constructing x0
+                    ]
+                    + [self.grid_static_features[: batch.batch_size], forcing_tensor],
+                    dim=forcing.dim_index("features"),
+                )
+                # x = torch.cat(
+                #     [
+                #         prev_states.select_dim("timestep", idx)
+                #         for idx in range(batch.num_input_steps)    # pay attention here, for flow matching multi input steps shouldn't be allowed for constructing x0
+                #     ]
+                #     + [self.grid_static_features[: batch.batch_size], forcing_tobedownscaled_upsampled_tensor]
+                #     +[external_forcings],
+                #     dim=forcing.dim_index("features"),
+                # )
+                
         return x
 
     def _step_diffs(
@@ -625,8 +882,75 @@ class AutoRegressiveLightning(LightningModule):
 
             batch.forcing.flatten_("ngrid", *batch.forcing.spatial_dim_idx)
 
+
+        # # Unpack shape
+        # B, T, N_lat, N_lon, d_f = batch.inputs.tensor.shape
+
+        # # Rearrange for interpolation: (B*T, d_f, N_lat, N_lon)
+        # aro_inputs = batch.inputs.tensor.view(B * T, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
+
+        # # Compute low-res dimensions
+        # N_lat_low = N_lat // 10
+        # N_lon_low = N_lon // 10
+
+        # # Downsample
+        # aro_inputs_lowres = torch.nn.functional.interpolate(
+        #     aro_inputs, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
+        # )
+
+        # # Upsample back
+        # aro_inputs_upsampled = torch.nn.functional.interpolate(
+        #     aro_inputs_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
+        # )
+
+        # # Rearrange back to (B, T, N_lat, N_lon, d_f)
+        # aro_inputs_upsampled_tensor = aro_inputs_upsampled.permute(0, 2, 3, 1).view(B, T, N_lat, N_lon, d_f)
+
+        # # Wrap into NamedTensor
+        # aro_inputs_upsampled_nt = NamedTensor.new_like(
+        #     aro_inputs_upsampled_tensor.type_as(batch.inputs.tensor), batch.inputs
+        # )
+
+
+
+        # prev_states = aro_inputs_upsampled_nt
         prev_states = batch.inputs
         prediction_list = []
+
+
+
+        #########################
+        # # Unpack shape
+        # B, T, N_lat, N_lon, d_f = batch.outputs.tensor.shape
+
+        # # Rearrange for interpolation: (B*T, d_f, N_lat, N_lon)
+        # aro_outputs = batch.outputs.tensor.view(B * T, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
+
+        # # Compute low-res dimensions
+        # N_lat_low = N_lat // 2
+        # N_lon_low = N_lon // 2
+
+        # # Downsample
+        # aro_outputs_lowres = torch.nn.functional.interpolate(
+        #     aro_outputs, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
+        # )
+
+        # # Upsample back
+        # aro_outputs_upsampled = torch.nn.functional.interpolate(
+        #     aro_outputs_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
+        # )
+
+        # # Rearrange back to (B, T, N_lat, N_lon, d_f)
+        # aro_outputs_upsampled_tensor = aro_outputs_upsampled.permute(0, 2, 3, 1).view(B, T, N_lat, N_lon, d_f)
+
+        # # Wrap into NamedTensor
+        # aro_outputs_upsampled_nt = NamedTensor.new_like(
+        #     aro_outputs_upsampled_tensor.type_as(batch.outputs.tensor), batch.outputs
+        # )
+        #########################
+
+
+
 
         # Here we do the autoregressive prediction looping
         # for the desired number of ar steps.
@@ -648,6 +972,8 @@ class AutoRegressiveLightning(LightningModule):
             # Should be greater or equal to 1 (otherwise nothing is done).
             for k in range(num_inter_steps):
                 x = self._next_x(batch, prev_states, i)
+                if self.noise_strategy == "CondLayerNorm":
+                    epsilon = torch.randn(self.batch_size, 32, device=prev_states.device)
                 # Graph (B, N_grid, d_f) or Conv (B, N_lat,N_lon d_f)
                 if self.channels_last:
                     x = x.to(memory_format=torch.channels_last)
@@ -655,19 +981,80 @@ class AutoRegressiveLightning(LightningModule):
                 # Here we adapt our tensors to the order of dimensions of CNNs and ViTs
                 if self.model.features_second:
                     x = features_last_to_second(x)
-                    y = self.model(x)
+                    if self.noise_strategy == "CondLayerNorm":
+                        y = self.model(x, cond_z=epsilon)
+                    else:   
+                        y = self.model(x)
                     y = features_second_to_last(y)
                 else:
-                    y = self.model(x)
+                    if self.noise_strategy == "CondLayerNorm":
+                        y = self.model(x, cond_z=epsilon)
+                    else:
+                        y = self.model(x)
 
                 # We update the latest of our prev_states with the network output
                 if scale_y:
-                    predicted_state = (
-                        # select the last timestep
-                        prev_states.select_dim("timestep", -1)
-                        + y * step_diff_std
-                        + step_diff_mean
-                    )
+
+                    # # Get shape
+                    # B, N_lat, N_lon, d_f = prev_states.select_dim("timestep", -1).shape
+
+                    # # Select timestep 0 and keep on GPU
+                    # aro_t = prev_states.select_dim("timestep", -1)  # shape: (B, N_lat, N_lon, d_f)
+
+                    # # Rearrange to (B, d_f, N_lat, N_lon) for interpolation
+                    # aro_t = aro_t.permute(0, 3, 1, 2)  # (B, d_f, H, W)
+
+                    # # Compute low-res dimensions
+                    # N_lat_low = N_lat // 10
+                    # N_lon_low = N_lon // 10
+
+                    # # Downsample
+                    # aro_t_lowres = torch.nn.functional.interpolate(
+                    #     aro_t, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
+                    # )
+
+                    # # Upsample back to original resolution
+                    # aro_t_upsampled = torch.nn.functional.interpolate(
+                    #     aro_t_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
+                    # )
+
+                    # # Rearrange back to (B, N_lat, N_lon, d_f)
+                    # aro_t_upsampled_tensor = aro_t_upsampled.permute(0, 2, 3, 1)  # shape: (B, N_lat, N_lon, d_f)
+                    
+                    # predicted_state = (
+                    #     3 * prev_states.select_dim("timestep", -1)
+                    #     - 3 * prev_states.select_dim("timestep", -2)
+                    #     + prev_states.select_dim("timestep", -3)
+                    #     + y * step_diff_std
+                    #     + step_diff_mean
+                    # )
+                    # predicted_state = (
+                    #     # select the last timestep
+                    #     2*prev_states.select_dim("timestep", -1)
+                    #     - prev_states.select_dim("timestep", -2)
+                    #     + y * step_diff_std
+                    #     + step_diff_mean
+                    # )
+                    # predicted_state = (1/3)*(
+                    #     # select the last timestep
+                    #     4*prev_states.select_dim("timestep", -1)
+                    #     - prev_states.select_dim("timestep", -2)
+                    #     + y * step_diff_std
+                    #     + step_diff_mean
+                    # )
+                    # predicted_state = (
+                    #     # select the last timestep
+                    #     prev_states.select_dim("timestep", -1)
+                    #     + y * step_diff_std
+                    #     + step_diff_mean
+                    # )
+                    # predicted_state = (
+                    #     # select the last timestep
+                    #     prev_states.select_dim("timestep", -2)
+                    #     + y * step_diff_std
+                    #     + step_diff_mean
+                    # )
+                    predicted_state = y
                 else:
                     predicted_state = prev_states.select_dim("timestep", -1) + y
 
@@ -722,7 +1109,8 @@ class AutoRegressiveLightning(LightningModule):
             pred_out = NamedTensor.new_like(
                 prediction.type_as(batch.outputs.tensor), batch.outputs
             )
-        return pred_out, batch.outputs
+
+        return pred_out, batch.outputs # aro_outputs_upsampled_nt
 
     def _common_step_FM_training(
         self, batch: ItemBatch, inference: bool = False
@@ -752,10 +1140,10 @@ class AutoRegressiveLightning(LightningModule):
         prev_states = batch.inputs
         prediction_list = []
 
-        # Draw t and dt
-        t = torch.rand(self.batch_size, device=prev_states.device)
-        dt = 1/(2**torch.floor(torch.rand(self.batch_size, device=prev_states.device)*7))
-        x_t = self._next_x(batch, prev_states, 0, t=t)
+        # Draw t and dt and epsilon ~ N(0,I)
+        # t = torch.rand(self.batch_size, device=prev_states.device)
+        # dt = 1/(2**torch.floor(torch.rand(self.batch_size, device=prev_states.device)*6))
+        epsilon = torch.randn_like(prev_states.select_dim("timestep", 0))
 
         border_state = batch.outputs.select_dim("timestep", 0)
 
@@ -766,8 +1154,14 @@ class AutoRegressiveLightning(LightningModule):
         ########################################################################################################
         # draw a random variable in [0,1] and verify it has value < 0.75, 3/4 of the time -> velocity matching #
         ########################################################################################################
-        if torch.rand(1).item() < 0.75:
-            
+        if torch.rand(1).item() < 1: # 0.9
+
+            t = torch.randint(low=0, high=64, size=(self.batch_size,), device=prev_states.device)
+            t = t.float() / 64 # Normalize t [0,1] range
+            dt = torch.zeros(self.batch_size, device=prev_states.device) # torch.ones(self.batch_size, device=prev_states.device) * (1 / 64)  # dt = 1/64 for flow matching target
+
+            x_t = self._next_x(batch, prev_states, 0, t=t, ft=epsilon)
+
             # Here we adapt our tensors to the order of dimensions of CNNs and ViTs
             if self.model.features_second:
                 x_t = features_last_to_second(x_t)
@@ -777,7 +1171,57 @@ class AutoRegressiveLightning(LightningModule):
                 y = self.model(x_t, t=t, dt=dt)
 
             # match velocity y = x_1-x_0
-            predicted_state = prev_states.select_dim("timestep", -1) + y
+            if self.dynamical_downscaling:
+                num_dynamic_features = batch.inputs.dim_size("features")
+                forcing_tensor = batch.forcing.select_dim("timestep", -1)
+                forcing_tobedownscaled = forcing_tensor[...,:num_dynamic_features]
+                if self.noise_strategy == "ddim":
+                    predicted_state = forcing_tobedownscaled + epsilon + y # arp_t+1 + epsilon + y
+                else:
+                #     step_diff_std, step_diff_mean = self._step_diffs(
+                #     (
+                #         self.output_feature_names
+                #         if inference
+                #         else batch.outputs.feature_names
+                #     ),
+                #     prev_states.device,
+                # )
+                #     predicted_state = (
+                #         forcing_tobedownscaled
+                #         + ((1 - 1e-5)*epsilon + y) * step_diff_std
+                #         + step_diff_mean
+                #     )
+                    # # Get shape
+                    # B, N_lat, N_lon, d_f = prev_states.select_dim("timestep", -1).shape
+
+                    # # Select timestep 0 and keep on GPU
+                    # aro_t = prev_states.select_dim("timestep", -1)  # shape: (B, N_lat, N_lon, d_f)
+
+                    # # Rearrange to (B, d_f, N_lat, N_lon) for interpolation
+                    # aro_t = aro_t.permute(0, 3, 1, 2)  # (B, d_f, H, W)
+
+                    # # Compute low-res dimensions
+                    # N_lat_low = N_lat // 4
+                    # N_lon_low = N_lon // 4
+
+                    # # Downsample
+                    # aro_t_lowres = torch.nn.functional.interpolate(
+                    #     aro_t, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
+                    # )
+
+                    # # Upsample back to original resolution
+                    # aro_t_upsampled = torch.nn.functional.interpolate(
+                    #     aro_t_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
+                    # )
+
+                    # # Rearrange back to (B, N_lat, N_lon, d_f)
+                    # aro_t_upsampled_tensor = aro_t_upsampled.permute(0, 2, 3, 1)  # shape: (B, N_lat, N_lon, d_f)
+                    
+                    predicted_state = (
+                        (1 - 1e-5)*prev_states.select_dim("timestep", -1) + y
+                    )
+            else:
+                predicted_state = prev_states.select_dim("timestep", -1) + y # aro_t + y
 
             # Overwrite border with true state
             # Force it to true state for all intermediary step
@@ -789,7 +1233,7 @@ class AutoRegressiveLightning(LightningModule):
             else:
                 prediction = predicted_state
 
-            # no AR loop leadind to a list of preds, requires additionnal dim for timesteps
+            # no A-R loop, requires additionnal dim for timesteps
             prediction = prediction.unsqueeze(1)
             #(B, pred_steps, N_grid, d_f) or (B, pred_steps, N_lat, N_lon, d_f)
 
@@ -802,27 +1246,43 @@ class AutoRegressiveLightning(LightningModule):
         # Else if random variable has value > 0.75, 1/4 of the time, consistency loss term is backpropagated #
         ######################################################################################################
         else:
+            # Sample dt_base ∈ {1, 2, 3, 4, 6}
+            dt_base = torch.randint(low=1, high=7, size=(self.batch_size,), device=prev_states.device)
+            dt_sections = torch.pow(2, dt_base)
+            # dt_sections ∈ {1, 2, 4, 8, 16, 32, 64}
+            dt = 1.0 / dt_sections
+            # dt = 1 / 2^dt_base ∈ {1, 1/2, ..., 1/64}
+            t = (torch.rand(self.batch_size, device=prev_states.device) * (dt_sections-1)).floor().long()
+            t = t / dt_sections  # Normalize t [0,1] range
+
+            x_t = self._next_x(batch, prev_states, 0, t=t, ft=epsilon)
+
             # Here we adapt our tensors to the order of dimensions of CNNs and ViTs
             if self.model.features_second:
                 x_t = features_last_to_second(x_t)
-                s_t = self.model(x_t, t=t, dt=dt)
-                s_t_2d = self.model(x_t, t=t, dt=2*dt)
-                s_t = features_second_to_last(s_t)
-                s_t_2d = features_second_to_last(s_t_2d)
-                x_td = self._next_x(batch, prev_states, 0, t=t, dt=dt, st=s_t)
-                x_td = features_last_to_second(x_td)
-                s_td = self.model(x_td, t=t+dt, dt=dt)
-                s_td = features_second_to_last(s_td)
+                with torch.no_grad():
+                    s_t = self.model(x_t, t=t, dt=dt)
+                    s_t = features_second_to_last(s_t)
+                    x_td = self._next_x(batch, prev_states, 0, t=t, dt=dt, st=s_t, ft=epsilon)
+                    x_td = features_last_to_second(x_td)
+                    s_td = self.model(x_td, t=t+dt, dt=dt)
+                    s_td = features_second_to_last(s_td)
 
+                s_t_2d = self.model(x_t, t=t, dt=2*dt)
+                s_t_2d = features_second_to_last(s_t_2d)
+                
             else:
-                s_t = self.model(x_t, t=t, dt=dt)
-                s_td = self.model(x_td, t=t+dt, dt=dt)
-                x_td = self._next_x(batch, prev_states, 0, t=t, dt=dt, st=s_t)
+                with torch.no_grad():
+                    s_t = self.model(x_t, t=t, dt=dt)
+                    x_td = self._next_x(batch, prev_states, 0, t=t, dt=dt, st=s_t, ft=epsilon)
+                    s_td = self.model(x_td, t=t+dt, dt=dt)
+
                 s_t_2d = self.model(x_t, t=t, dt=2*dt)
 
             # self-consistency target
-            # no AR loop leadind to a list of preds, requires additionnal dim for timesteps
-            target = torch.unsqueeze((s_t+s_td)/2, 1)
+            # no A-R loop, requires additionnal dim for timesteps
+            v_target = torch.clip((s_t+s_td)/2, -4, 4)
+            target = torch.unsqueeze(v_target, 1)
             pred_out = torch.unsqueeze(s_t_2d, 1)
             #(B, pred_steps, N_grid, d_f) or (B, pred_steps, N_lat, N_lon, d_f)
 
@@ -859,9 +1319,10 @@ class AutoRegressiveLightning(LightningModule):
             batch.forcing.flatten_("ngrid", *batch.forcing.spatial_dim_idx)
 
         prev_states = batch.inputs
-        num_dynamic_features = batch.inputs.dim_size("features")
         prediction_list = []
 
+        num_dynamic_features = batch.inputs.dim_size("features")
+        
         # Here we do the autoregressive prediction looping
         # for the desired number of ar steps.
         for i in range(batch.num_pred_steps):
@@ -871,9 +1332,7 @@ class AutoRegressiveLightning(LightningModule):
             # Intermediary steps for which we have no y_true data
             # Should be greater or equal to 1 (otherwise nothing is done).
             for k in range(num_inter_steps):
-                dt = torch.tensor(1/self.shortcut_length, device=prev_states.device)*torch.ones(
-                    self.batch_size, device=prev_states.device
-                )
+                dt = torch.tensor(1/self.shortcut_length, device=prev_states.device)*torch.ones(self.batch_size, device=prev_states.device)
                 t = torch.zeros(self.batch_size, device=prev_states.device)
                 x = self._next_x(batch, prev_states, i)
 
@@ -882,7 +1341,8 @@ class AutoRegressiveLightning(LightningModule):
                     x = x.to(memory_format=torch.channels_last)
 
                 for n in range(self.shortcut_length):
-                    
+                    dt = torch.zeros(
+                    self.batch_size, device=prev_states.device)
                     # Here we adapt our tensors to the order of dimensions of CNNs and ViTs
                     if self.model.features_second:
                         x = features_last_to_second(x)
@@ -894,18 +1354,40 @@ class AutoRegressiveLightning(LightningModule):
                     
                     # remove forcings + static features 
                     # retrieves the number of features of batch.inputs
-                    n = batch
-                    x = x[...,:num_dynamic_features]
-                    # requires timestep dimension to match prev_states dimensions
-                    x = x.unsqueeze(1)
-
-                    x = NamedTensor.new_like(x.type_as(prev_states.tensor), prev_states)
-                    x = self._next_x(batch, x, i, t=None, dt=dt, st=s_t)
+                    x = x[...,:num_dynamic_features] # flow matching dynamic state x(t) always at beginning of the tensor
+                    
+                    if self.dynamical_downscaling:
+                        dt = torch.tensor(1/self.shortcut_length, device=prev_states.device)*torch.ones(self.batch_size, device=prev_states.device)
+                        x = self._next_x(batch, prev_states, i, t=None, dt=dt, st=s_t, ft=x) 
+                    else:
+                        # requires timestep dimension to match prev_states dimensions
+                        x = x.unsqueeze(1)
+                        x = NamedTensor.new_like(x.type_as(prev_states.tensor), prev_states)
+                        x = self._next_x(batch, x, i, t=None, dt=dt, st=s_t)
 
                     t = t + dt
+                
                     
                 # remove forcings + static features from
-                predicted_state = x[...,:num_dynamic_features]
+                if self.noise_strategy == "ddim":
+                    predicted_state = x[...,:num_dynamic_features] + batch.forcing.select_dim("timestep", i)[...,:num_dynamic_features] # pred residual + arp_t+1
+                else:
+                #     step_diff_std, step_diff_mean = self._step_diffs(
+                #     (
+                #         self.output_feature_names
+                #         if inference
+                #         else batch.outputs.feature_names
+                #     ),
+                #     prev_states.device,
+                # )
+                #     predicted_state = (
+                #         batch.forcing.select_dim("timestep", i)[...,:num_dynamic_features]
+                #         + x[...,:num_dynamic_features] * step_diff_std
+                #         + step_diff_mean
+                #     )
+                    predicted_state = (
+                        x[...,:num_dynamic_features]
+                    )
 
                 # Overwrite border with true state
                 # Force it to true state for all intermediary step
@@ -958,7 +1440,12 @@ class AutoRegressiveLightning(LightningModule):
             pred_out = NamedTensor.new_like(
                 prediction.type_as(batch.outputs.tensor), batch.outputs
             )
-        return pred_out, batch.outputs
+
+            lowres_tensor = batch.forcing.tensor[...,:num_dynamic_features]
+            lowres = NamedTensor.new_like(
+                lowres_tensor.type_as(batch.outputs.tensor), batch.outputs
+            )
+        return pred_out, batch.outputs, lowres
 
     def on_train_start(self):
         self.train_plotters = []
@@ -971,6 +1458,37 @@ class AutoRegressiveLightning(LightningModule):
             avg_loss = torch.stack([x for x in outputs]).mean()
             tb = self.logger.experiment
             tb.add_scalar(f"mean_loss_epoch/{label}", avg_loss, self.current_epoch)
+    
+    def smooth(self, x: torch.Tensor, scale: int = 1) -> NamedTensor:
+        # Unpack shape
+        B, T, N_lat, N_lon, d_f = x.tensor.shape
+
+        # Rearrange for interpolation: (B*T, d_f, N_lat, N_lon)
+        aro_outputs = x.tensor.view(B * T, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
+
+        # Compute low-res dimensions
+        N_lat_low = N_lat // scale
+        N_lon_low = N_lon // scale
+
+        # Downsample
+        aro_outputs_lowres = torch.nn.functional.interpolate(
+            aro_outputs, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
+        )
+
+        # Upsample back
+        aro_outputs_upsampled = torch.nn.functional.interpolate(
+            aro_outputs_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
+        )
+
+        # Rearrange back to (B, T, N_lat, N_lon, d_f)
+        aro_outputs_upsampled_tensor = aro_outputs_upsampled.permute(0, 2, 3, 1).view(B, T, N_lat, N_lon, d_f)
+
+        # Wrap into NamedTensor
+        aro_outputs_upsampled_nt = NamedTensor.new_like(
+            aro_outputs_upsampled_tensor.type_as(x.tensor), x
+        )
+        return aro_outputs_upsampled_nt
+        
 
     def training_step(self, batch: ItemBatch, batch_idx: int) -> torch.Tensor:
         """
@@ -987,10 +1505,10 @@ class AutoRegressiveLightning(LightningModule):
 
         if self.shortcut_length is not None:
             prediction, target = self.common_step_FM_training(batch)
+            batch_loss = torch.mean(self.loss(prediction, target, epoch=self.current_epoch))
         else:
-            prediction, target = self.common_step_(batch)
-        # Compute loss: mean over unrolled times and batch
-        batch_loss = torch.mean(self.loss(prediction, target, epoch=self.current_epoch))
+            prediction, target = self.common_step(batch)
+            batch_loss = torch.mean(self.loss(prediction, target, epoch=self.current_epoch))
 
         self.training_step_losses.append(batch_loss)
 
@@ -1000,6 +1518,75 @@ class AutoRegressiveLightning(LightningModule):
                 plotter.update(self, prediction=self.prediction, target=self.target)
 
         return batch_loss
+
+    # def training_step(self, batch: ItemBatch, batch_idx: int) -> torch.Tensor:
+    #     """
+    #     Train on single batch using frequency-sliced loss (LF, MF, HF)
+    #     """
+    #     max_scale_power = 5
+
+    #     if batch_idx == 0:
+    #         self.input_feature_names = batch.inputs.feature_names
+    #         self.output_feature_names = batch.outputs.feature_names
+    #         self.output_dim_names = batch.outputs.names
+    #         self.output_dtype = batch.outputs.tensor.dtype
+
+    #     if self.shortcut_length is not None:
+    #         prediction, target = self.common_step_FM_training(batch)
+    #         batch_loss = torch.mean(self.loss(prediction, target, epoch=self.current_epoch))
+    #     else:
+    #         prediction, target = self.common_step(batch)
+
+    #         # Generate smoothing scales (e.g., for max_scale_power=2: [4, 2, 1])
+    #         scales = [2 ** i for i in reversed(range(max_scale_power + 1))]
+
+    #         # Smooth predictions and targets at all scales
+    #         smooth_preds = [self.smooth(prediction, scale=s) if s != 1 else prediction for s in scales]
+    #         smooth_tgts = [self.smooth(target, scale=s) if s != 1 else target for s in scales]
+
+    #         # Compute frequency bands as differences between successive smoothings
+    #         pred_bands = []
+    #         tgt_bands = []
+    #         for i in range(len(scales) - 1):
+    #             pred_band = NamedTensor.new_like(
+    #                 (smooth_preds[i + 1].tensor - smooth_preds[i].tensor).type_as(prediction.tensor), prediction
+    #             )
+    #             tgt_band = NamedTensor.new_like(
+    #                 (smooth_tgts[i + 1].tensor - smooth_tgts[i].tensor).type_as(target.tensor), target
+    #             )
+    #             pred_bands.append(pred_band)
+    #             tgt_bands.append(tgt_band)
+
+    #         # Add lowest frequency band (i.e., the most smoothed one)
+    #         pred_bands.insert(0, smooth_preds[0])
+    #         tgt_bands.insert(0, smooth_tgts[0])
+
+    #         # Weighting: 1/scales
+    #         # weights = [1/scales[i] for i in range(len(scales))]
+    #         # total_weight = sum(weights)
+
+    #         with torch.no_grad():
+    #             raw_weights = torch.tensor([1.0 / (torch.mean(self.loss(pb, tb, epoch=self.current_epoch)).detach() + 1e-8) 
+    #                                         for pb, tb in zip(pred_bands, tgt_bands)])
+    #         weights = raw_weights / raw_weights.sum()
+
+    #         # Compute weighted loss
+    #         weighted_losses = []
+    #         for pred_band, tgt_band, weight in zip(pred_bands, tgt_bands, weights):
+    #             band_loss = torch.mean(self.loss(pred_band, tgt_band, epoch=self.current_epoch))
+    #             weighted_losses.append(weight * band_loss)
+
+    #         # batch_loss = sum(weighted_losses) / total_weight
+    #         batch_loss = sum(weighted_losses)
+
+    #     self.training_step_losses.append(batch_loss)
+
+    #     # Notify every plotters
+    #     if self.logging_enabled:
+    #         for plotter in self.train_plotters:
+    #             plotter.update(self, prediction=self.prediction, target=self.target)
+
+    #     return batch_loss
 
     def on_save_checkpoint(self, checkpoint):
         """
@@ -1091,30 +1678,51 @@ class AutoRegressiveLightning(LightningModule):
             l1_loss = ScaledLoss("L1Loss", reduction="none")
             l1_loss.prepare(self, self.interior_mask, self.dataset_info)
             metrics = {"mae": l1_loss}
-            self.valid_plotters = [
-                StateErrorPlot(metrics, prefix="Validation"),
-                PredictionTimestepPlot(
+            if self.dynamical_downscaling:
+                self.valid_plotters = [
+                    DownscalingPredictionTimestepPlot(
                     num_samples_to_plot=1,
-                    num_features_to_plot=4,
+                    num_features_to_plot=8,
                     prefix="Validation",
                     save_path=self.save_path,
                 ),
-                PredictionEpochPlot(
-                    num_samples_to_plot=1,
-                    num_features_to_plot=4,
-                    prefix="Validation",
-                    save_path=self.save_path,
-                ),
-            ]
+                    DownscalingPredictionEpochPlot(
+                        num_samples_to_plot=1,
+                        num_features_to_plot=8,
+                        prefix="Validation",
+                        save_path=self.save_path,
+                    ),
+                ]
+            else:
+                self.valid_plotters = [
+                    PredictionTimestepPlot(
+                        num_samples_to_plot=1,
+                        num_features_to_plot=8,
+                        prefix="Validation",
+                        save_path=self.save_path,
+                    ),
+                    PredictionEpochPlot(
+                        num_samples_to_plot=1,
+                        num_features_to_plot=8,
+                        prefix="Validation",
+                        save_path=self.save_path,
+                    ),
+                ]
 
     def _shared_val_test_step(self, batch: ItemBatch, batch_idx, label: str):
         with torch.no_grad():
             if self.shortcut_length is not None:
-                prediction, target = self.common_step_FM_sampling(batch)
+                loss_prediction, loss_target = self.common_step_FM_training(batch)
+                prediction, target, lowres = self.common_step_FM_sampling(batch)
+                time_step_loss = torch.mean(
+                    self.loss(loss_prediction, loss_target, epoch=self.current_epoch),
+                    dim=0,
+                )
             else:
                 prediction, target = self.common_step(batch)
+                lowres = None
+                time_step_loss = torch.mean(self.loss(prediction, target, epoch=self.current_epoch), dim=0)
 
-        time_step_loss = torch.mean(self.loss(prediction, target, epoch=self.current_epoch), dim=0)
         mean_loss = torch.mean(time_step_loss)
 
         if self.logging_enabled:
@@ -1131,13 +1739,13 @@ class AutoRegressiveLightning(LightningModule):
                 sync_dist=True,
                 prog_bar=(label == "val"),
             )
-        return prediction, target, mean_loss
+        return prediction, target, lowres, mean_loss
 
     def validation_step(self, batch: ItemBatch, batch_idx):
         """
         Run validation on single batch
         """
-        prediction, target, mean_loss = self._shared_val_test_step(
+        prediction, target, lowres, mean_loss = self._shared_val_test_step(
             batch, batch_idx, "val"
         )
         self.validation_step_losses.append(mean_loss)
@@ -1148,8 +1756,14 @@ class AutoRegressiveLightning(LightningModule):
             # Notify every plotters
             if self.current_epoch % PLOT_PERIOD == 0:
                 for plotter in self.valid_plotters:
-                    plotter.update(self, prediction=prediction, target=target)
-            self.psd_plot_metric.update(prediction, target, self.original_shape)
+                    if lowres is not None and hasattr(plotter, "requires_lowres"):
+                        plotter.update(self, prediction=prediction, target=target, lowres=lowres)
+                    else:
+                        plotter.update(self, prediction=prediction, target=target)
+            if self.dynamical_downscaling:
+                self.downscale_psd_plot_metric.update(prediction, target, lowres, self.original_shape)
+            else:
+                self.psd_plot_metric.update(prediction, target, self.original_shape)
             self.rmse_psd_plot_metric.update(prediction, target, self.original_shape)
             self.acc_metric.update(prediction, target)
 
@@ -1161,7 +1775,10 @@ class AutoRegressiveLightning(LightningModule):
         if self.logging_enabled:
             # Get dict of metrics' results
             dict_metrics = dict()
-            dict_metrics.update(self.psd_plot_metric.compute())
+            if self.dynamical_downscaling:
+                dict_metrics.update(self.downscale_psd_plot_metric.compute())
+            else:
+                dict_metrics.update(self.psd_plot_metric.compute())
             dict_metrics.update(self.rmse_psd_plot_metric.compute())
             dict_metrics.update(self.acc_metric.compute())
             for name, elmnt in dict_metrics.items():
@@ -1218,68 +1835,101 @@ class AutoRegressiveLightning(LightningModule):
                 SpatialErrorPlot(),
                 PredictionTimestepPlot(
                     num_samples_to_plot=self.num_samples_to_plot,
-                    num_features_to_plot=4,
+                    num_features_to_plot=6,
                     prefix="Test",
                     save_path=self.save_path,
-                ),
+                )
             ]
+            if self.dynamical_downscaling:
+                self.test_plotters.append(
+                    DownscalingPredictionTimestepPlot(
+                    num_samples_to_plot=self.num_samples_to_plot,
+                    num_features_to_plot=6,
+                    prefix="Test",
+                    save_path=self.save_path,
+                )
+                )
 
             if self.ensemble_metrics:
                 self.test_plotters.append(SpreadTimestepPlot(
                     metric=self.spread_map_metric,
                     dataset_name = self.dataset_info.name,
                     num_samples_to_plot=self.num_samples_to_plot,
-                    num_features_to_plot=4,
+                    num_features_to_plot=6,
                     prefix="Test",
                     save_path=self.save_path,
                 ))
                 self.test_plotters.append(SpreadSkillPlot(
-                    metric_spread=self.spread_map_metric,
-                    metric_error=self.rmse_metric,
+                    metric_spread=self.unbVar_metric,
+                    metric_error=self.skill_metric,
                     dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=3,
+                    num_samples_to_plot=93,
                     num_features_to_plot=6,
                     prefix="Test",
                     save_path=self.save_path,
+                    num_pred_steps_test=self.num_pred_steps_val_test,
                 ))
                 self.test_plotters.append(CRPSPlot(
                     metric=self.crps_metric,
                     dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=3,
+                    num_samples_to_plot=93,
                     num_features_to_plot=6,
                     prefix="Test",
                     save_path=self.save_path,
+                    num_pred_steps_test=self.num_pred_steps_val_test,
                 ))
 
     def test_step(self, batch: ItemBatch, batch_idx):
         """
         Run test on single batch
         """
-        prediction, target, _ = self._shared_val_test_step(batch, batch_idx, "test")
+        prediction, target, lowres, _ = self._shared_val_test_step(batch, batch_idx, "test")
 
         if self.logging_enabled:
             
-            desired_indices = [prediction.feature_names_to_idx[feature] for feature in self.features_to_plot]
-            # Use index_select_dim to create a new NamedTensor with only the desired features
-            sliced_prediction = NamedTensor(
-                tensor=prediction.index_select_dim(prediction.feature_dim_name, torch.tensor(desired_indices), bare_tensor=True),
-                names=prediction.names.copy(),
-                feature_names=self.features_to_plot,
-                feature_dim_name=prediction.feature_dim_name
-            )
-            sliced_target = NamedTensor(
-                tensor=target.index_select_dim(target.feature_dim_name, torch.tensor(desired_indices), bare_tensor=True),
-                names=target.names.copy(),
-                feature_names=self.features_to_plot,
-                feature_dim_name=target.feature_dim_name
-            )
+            if "full" in self.features_to_plot:
+
+                # If we want to plot all features, we do not slice the prediction and target
+                sliced_prediction = prediction
+                sliced_target = target
+                sliced_lowres = lowres if lowres is not None else None
+            else:
+
+                desired_indices = [prediction.feature_names_to_idx[feature] for feature in self.features_to_plot]
+                # Use index_select_dim to create a new NamedTensor with only the desired features
+                sliced_prediction = NamedTensor(
+                    tensor=prediction.index_select_dim(prediction.feature_dim_name, torch.tensor(desired_indices), bare_tensor=True),
+                    names=prediction.names.copy(),
+                    feature_names=self.features_to_plot,
+                    feature_dim_name=prediction.feature_dim_name
+                )
+                sliced_target = NamedTensor(
+                    tensor=target.index_select_dim(target.feature_dim_name, torch.tensor(desired_indices), bare_tensor=True),
+                    names=target.names.copy(),
+                    feature_names=self.features_to_plot,
+                    feature_dim_name=target.feature_dim_name
+                )
+
+                if lowres is not None:
+                    sliced_lowres = NamedTensor(
+                        tensor=lowres.index_select_dim(lowres.feature_dim_name, torch.tensor(desired_indices), bare_tensor=True),
+                        names=lowres.names.copy(),
+                        feature_names=self.features_to_plot,
+                        feature_dim_name=lowres.feature_dim_name
+                    )
 
             # Notify plotters & metrics
             for plotter in self.test_plotters:
-                plotter.update(self, prediction=sliced_prediction, target=sliced_target)
+                if lowres is not None and hasattr(plotter, "requires_lowres"):
+                    plotter.update(self, prediction=sliced_prediction, target=sliced_target, lowres=sliced_lowres)
+                else:
+                    plotter.update(self, prediction=sliced_prediction, target=sliced_target)
 
             self.acc_metric.update(prediction, target)
-            self.psd_plot_metric.update(prediction, target, self.original_shape)
+            if self.dynamical_downscaling:
+                self.downscale_psd_plot_metric.update(prediction, target, lowres, self.original_shape)
+            else:
+                self.psd_plot_metric.update(prediction, target, self.original_shape)
             self.rmse_psd_plot_metric.update(prediction, target, self.original_shape)
 
     @cached_property
@@ -1300,7 +1950,10 @@ class AutoRegressiveLightning(LightningModule):
         """
         if self.logging_enabled:
             dict_metrics = {}
-            dict_metrics.update(self.psd_plot_metric.compute(prefix="test"))
+            if self.dynamical_downscaling:
+                dict_metrics.update(self.downscale_psd_plot_metric.compute(prefix="test"))
+            else:
+                dict_metrics.update(self.psd_plot_metric.compute(prefix="test"))
             dict_metrics.update(self.rmse_psd_plot_metric.compute(prefix="test"))
             dict_metrics.update(self.acc_metric.compute(prefix="test"))
 

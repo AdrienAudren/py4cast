@@ -7,7 +7,7 @@ from scipy.fftpack import dct
 from torchmetrics import Metric
 from torchmetrics.utilities import dim_zero_cat
 from py4cast.datasets.base import DatasetInfo, NamedTensor
-from py4cast.plots import plot_log_psd
+from py4cast.plots import plot_log_psd, plot_log_psd_downscaling
 
 
 class MetricPSDK(Metric):
@@ -100,6 +100,10 @@ class MetricPSDK(Metric):
                 mean_psd_target[c].cpu().numpy(),
                 f"PSD for {features_name[c]} at +{self.pred_step+1}h",
             )
+            np.save(
+                self.save_path / f"{prefix}_mean_psd_k_{features_name[c]}_{self.pred_step+1}.npy",
+                np.array([k, mean_psd_pred[c].cpu().numpy(), mean_psd_target[c].cpu().numpy()])
+            )
             dict_psd_metric[f"{prefix}_mean_psd_k/{features_name[c]}"] = fig
             dest_file = (
                 self.save_path
@@ -138,6 +142,109 @@ class MetricPSDK(Metric):
             sum_psd[c, :] += psd_torch
 
         return sum_psd
+
+class MetricPSDKdownscaling(MetricPSDK):
+    """
+    Compute the PSD as a function of the wave number for each channels/features
+    """
+
+    def __init__(self, save_path: Path, pred_step: int = 0):
+        super().__init__(save_path, pred_step)
+
+        # Declaration of state, states are reset when self.reset() is called
+        # Sum PSD lowres at each epoch
+        self.add_state(
+            "sum_psd_lowres",
+            default=torch.tensor(0.0),
+            dist_reduce_fx="sum",
+        )
+
+    def update(self, preds: NamedTensor, targets: NamedTensor, lowres: NamedTensor, shape: tuple):
+        """
+        Add PSD to their respective sum. Should be called at each validation step's end
+        """
+        if preds.tensor.shape != targets.tensor.shape:
+            raise ValueError("preds and targets must have the same shape")
+
+        if shape is not None:
+            unflatten_dims_name = ["Lon", "Lat"]
+            unflattened_size = shape[2:4]
+            dim = 2
+            # reshape tensor from (batch_size, num_pred_steps, grid, nb_channels)
+            # to (batch_size, num_pred_steps, lon, lat, nb_channels)
+            preds.unflatten_(dim, unflattened_size, unflatten_dims_name)
+            targets.unflatten_(dim, unflattened_size, unflatten_dims_name)
+            lowres.unflatten_(dim, unflattened_size, unflatten_dims_name)
+
+        if self.step_count == 0:
+            self.feature_names = preds.feature_names
+
+        # Add PSD to the sums
+        self.sum_psd_pred = self.add_psd(
+            preds.tensor, self.sum_psd_pred, self.pred_step
+        )
+        self.sum_psd_target = self.add_psd(
+            targets.tensor, self.sum_psd_target, self.pred_step
+        )
+        self.sum_psd_lowres = self.add_psd(
+            lowres.tensor, self.sum_psd_lowres, self.pred_step
+        )
+
+        # Increment count_step
+        self.step_count += 1
+
+        if shape is not None:
+            # reshape tensor from (batch_size, num_pred_steps, lon, lat, nb_channels)
+            # to (batch_size, num_pred_steps, grid, nb_channels)
+            preds.flatten_("ngrid", 2, 3)
+            targets.flatten_("ngrid", 2, 3)
+            lowres.flatten_("ngrid", 2, 3)
+
+    def compute(self, prefix: str = "val") -> dict:
+        """
+        Compute PSD mean for each channels/features, plot the figure, return a dict.
+        Should be called at each epoch's end
+        """
+
+        # Compute PSD mean over an epoch
+        mean_psd_pred = self.sum_psd_pred / self.step_count
+        mean_psd_target = self.sum_psd_target / self.step_count
+        mean_psd_lowres = self.sum_psd_lowres / self.step_count
+        features_name = self.feature_names
+        nb_channel = mean_psd_pred.shape[0]
+
+        # Compute max wave number
+        Rmax = mean_psd_pred.shape[1]
+        # Compute all wave number
+        k = np.linspace(2 * np.pi / 2.6, Rmax * 2 * np.pi / 2.6, Rmax)
+
+        # dict {"feature_name" : fig}
+        dict_psd_metric = dict()
+        for c in range(nb_channel):
+            fig = plot_log_psd_downscaling(
+                k,
+                mean_psd_pred[c].cpu().numpy(),
+                mean_psd_target[c].cpu().numpy(),
+                mean_psd_lowres[c].cpu().numpy(),
+                f"PSD for {features_name[c]} at +{self.pred_step+1}h",
+            )
+            np.save(
+                self.save_path / f"{prefix}_mean_psd_k_{features_name[c]}_{self.pred_step+1}.npy",
+                np.array([k, mean_psd_pred[c].cpu().numpy(), mean_psd_target[c].cpu().numpy(), mean_psd_lowres[c].cpu().numpy()])
+            )
+            dict_psd_metric[f"{prefix}_mean_psd_k/{features_name[c]}"] = fig
+            dest_file = (
+                self.save_path
+                / f"{prefix}_mean_psd_k/{features_name[c]}_{self.pred_step+1}.png"
+            )
+            if self.save_path.exists():
+                dest_file.parent.mkdir(exist_ok=True)
+                fig.savefig(dest_file)
+
+        # Reset metric's state
+        self.reset()
+
+        return dict_psd_metric
 
 
 class MetricPSDVar(Metric):
@@ -434,63 +541,6 @@ class MetricACC(Metric):
         self.reset()
 
         return metric_log_dict
-
-# class MetricSpread(Metric):
-#     """
-#     Compute the spatially averaged, per pred step members spread for both the target (PE-AROME) and the prediction
-#     """
-
-#     def __init__(self, dataset_info: DatasetInfo, pred_step: int = 0):
-#         super().__init__()
-#         self.pred_step = pred_step 
-        
-#         self.add_state("preds_std", default=torch.zeros((self.pred_step, dataset_info.weather_dim)), dist_reduce_fx="sum")
-#         self.add_state("target_std", default=torch.zeros((self.pred_step, dataset_info.weather_dim)), dist_reduce_fx="sum")
-#         # dist_reduce_fx="sum" because step_count is also summed accross processes
-
-#         # Step counter, needed to compute spread mean at each epoch.
-#         self.add_state("step_count", default=torch.tensor(0.0), dist_reduce_fx="sum")
-
-#         self.dataset_name = dataset_info.name
-
-#     def update(self, preds: NamedTensor, target: NamedTensor, *args):
-#         """
-#         Assuming a batch contains the members of a same ensemble,
-#         compute the spread of batch=members for both target and pred.
-#         prediction/target: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
-#         called at each end of step
-#         """
-        
-#         if self.step_count == 0:
-#             self.feature_names = preds.feature_names
-
-#         # a priori unknown number of spatial dims
-#         # but they are all after pred_steps and before features
-#         spatial_dims = tuple(preds.spatial_dim_idx)
-#         if preds.tensor.shape != target.tensor.shape:
-#             raise ValueError("preds and target must have the same shape")
-
-#         # Spread computation
-#         self.preds_std += preds.tensor.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in spatial_dims]))
-#         self.target_std += target.tensor.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in spatial_dims]))
-
-#         # Increment step_count
-#         self.step_count += 1
-        
-#     def compute(self, prefix: str = "val") -> dict:
-#         """
-#         Compute spread mean for each channels/features, return a dict.
-#         Should be called at each epoch's end
-#         """
-#         # Compute mean spread over an epoch
-#         mean_spread_preds = self.preds_std / self.step_count
-#         mean_spread_target = self.target_std / self.step_count
-#         # Reset metric's state
-#         self.reset()
-
-#         return {"preds": mean_spread_preds,
-#                 f"{self.dataset_name}": mean_spread_target,
-#                 }
         
 class MetricSpread(Metric):
     """
@@ -592,9 +642,9 @@ class MetricMapSpread(Metric):
                 "pearo": targets_std,
                 }
 
-class MetricRMSE(Metric):
+class MetricSquaredSkill(Metric):
     """
-    Compute the root mean square error (RMSE) with TITAN test target rollout as ground truth
+    Compute the skill = RMSE of ensemble mean (Fortin et al. 2014) with TITAN test target rollout as ground truth
     """
 
     def __init__(self, dataset_info: DatasetInfo, pred_step: int = 0):
@@ -614,6 +664,7 @@ class MetricRMSE(Metric):
         prediction/target: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
         called at each end of step
         """
+
         if pred.shape != target.shape:
             raise ValueError("preds and target must have the same shape")
 
@@ -628,17 +679,70 @@ class MetricRMSE(Metric):
         # Ensure concatenating into a single tensor along device dimension
         preds = dim_zero_cat(self.preds)
         pearo = dim_zero_cat(self.pearo)
-        target = torch.from_numpy(np.load(f"/py4cast_root_dir/titan_6var/gt_titan/titan_gt_rescaled_batch_{num_batch}.npy")).to(preds.device)
-        # rmse computation
-        preds_rmse = torch.sqrt(torch.mean((preds - target) ** 2, dim=0))
-        pearo_rmse = torch.sqrt(torch.mean((pearo - target) ** 2, dim=0))
+        target = torch.from_numpy(np.load(f"/gt_titan/titan_gt_rescaled_batch_{num_batch}.npy")).to(preds.device)
+        # target = target[1:]
+        # print(f"target shape: {target.shape}")
+        # print(f"preds shape: {preds.shape}")
+        # target = target[...,:8]
+        # skill computation
+        preds_skill = torch.mean((preds.mean(dim=0) - target[0]) ** 2, dim=(1,2))
+        pearo_skill = torch.mean((pearo.mean(dim=0) - target[0]) ** 2, dim=(1,2))
         # Reconvert to initial type then reset metric's state
         self.preds = []
         self.pearo = []
         self.reset()
 
-        return {"preds": preds_rmse,
-                "pearo": pearo_rmse,
+        return {"preds": preds_skill, # (pred_steps, d_f)
+                "pearo": pearo_skill, # (pred_steps, d_f)
+                }
+
+class MetricUnbiasedVariance(Metric):
+    """
+    Compute the unbiased variance of the ensemble members.
+    """
+
+    def __init__(self, dataset_info: DatasetInfo, pred_step: int = 0):
+        super().__init__()
+        self.pred_step = pred_step 
+        
+        self.add_state("preds", default=[], dist_reduce_fx="cat")
+        self.add_state("pearo", default=[], dist_reduce_fx="cat")
+        # dist_reduce_fx="cat" because we gather multiple batch before computing std
+
+        self.dataset_name = dataset_info.name
+
+    def update(self, pred: torch.Tensor, target: torch.Tensor, *args):
+        """
+        Assuming a batch contains the members of a same ensemble,
+        compute the spread of batch=members for both target and pred.
+        prediction/target: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
+        called at each end of step
+        """
+
+        if pred.shape != target.shape:
+            raise ValueError("preds and target must have the same shape")
+
+        self.preds.append(pred)
+        self.pearo.append(target)
+
+    def compute(self, prefix: str = "val") -> dict:
+        """
+        Compute spread mean for each channels/features, return a dict.
+        Should be called at each epoch's end
+        """
+        # Ensure concatenating into a single tensor along device dimension
+        preds = dim_zero_cat(self.preds)
+        pearo = dim_zero_cat(self.pearo)
+        # skill computation
+        preds_unbVar = torch.mean(torch.var(preds, dim=0, correction=1), dim=(1,2))
+        pearo_unbVar = torch.mean(torch.var(pearo, dim=0, correction=1), dim=(1,2))
+        # Reconvert to initial type then reset metric's state
+        self.preds = []
+        self.pearo = []
+        self.reset()
+
+        return {"preds": preds_unbVar, # (pred_steps, d_f)
+                "pearo": pearo_unbVar, # (pred_steps, d_f)
                 }
 
 class MetricCRPS(Metric):
@@ -680,8 +784,9 @@ class MetricCRPS(Metric):
 
         # Load full ground truth
         target = torch.from_numpy(
-            np.load(f"/py4cast_root_dir/titan_6var/gt_titan/titan_gt_rescaled_batch_{num_batch}.npy")
+            np.load(f"/gt_titan/titan_gt_rescaled_batch_{num_batch}.npy")
         ).to(preds.device)  # (1, pred_steps, ..., d_f)
+        # target = target[1:]
 
         # Expand target to match preds
         target = target.expand_as(preds)
@@ -690,7 +795,7 @@ class MetricCRPS(Metric):
         term1 = torch.mean(torch.abs(preds - target), dim=0)  # (pred_steps, ..., d_f)
         # Term 2: Mean absolute difference between ensemble members using for-loop
         term2 = torch.zeros_like(term1)
-        count = 0
+        count = ensemble_size/2 # classic CRPS, count diagonal terms / 2
         for i in range(ensemble_size):
             for j in range(i + 1, ensemble_size):
                 diff_ij = torch.abs(preds[i] - preds[j])  # (pred_steps, ..., d_f)
@@ -703,7 +808,7 @@ class MetricCRPS(Metric):
         term1 = torch.mean(torch.abs(pearo - target), dim=0)  # (pred_steps, ..., d_f)
         # Term 2: Mean absolute difference between ensemble members using for-loop
         term2 = torch.zeros_like(term1)
-        count = 0
+        count = ensemble_size/2 # classic CRPS 
         for i in range(ensemble_size):
             for j in range(i + 1, ensemble_size):
                 diff_ij = torch.abs(pearo[i] - pearo[j])  # (pred_steps, ..., d_f)

@@ -362,7 +362,35 @@ class Stats:
         return self.stats.items()
 
     def __getitem__(self, shortname: str):
+        # return self.stats[shortname[2:]] if self.fname==Path("/dataset/POESY/diff_stats_2order.pt") else self.stats[shortname]
+        # return self.stats[shortname[2:]] if self.fname==Path("/dataset/POESY/multi_scale_gk_stats.pt") else self.stats[shortname]
         return self.stats[shortname]
+        
+        
+
+    # def to_list(
+    #     self,
+    #     stat_name: Literal["mean", "std", "min", "max"],
+    #     shortnames: List[str],
+    #     dtype: torch.dtype = torch.float32,
+    # ) -> list:
+    #     """
+    #     Get a tensor with the stats inside.
+    #     The order is the one of the shortnames.
+
+    #     Args:
+    #         stat_name : Statistics wanted
+    #         names (List[str]): Field for which we want stats
+
+    #     Returns:
+    #         _type_: _description_
+    #     """
+    #     if len(shortnames) > 0:
+    #         return torch.stack(
+    #             [self[name][stat_name] for name in shortnames], dim=0
+    #         ).type(dtype)
+    #     else:
+    #         return []
 
     def to_list(
         self,
@@ -376,15 +404,17 @@ class Stats:
 
         Args:
             stat_name : Statistics wanted
-            names (List[str]): Field for which we want stats
+            shortnames (List[str]): Fields for which we want stats
 
         Returns:
-            _type_: _description_
+            torch.Tensor | list: Tensor if shortnames not empty, else empty list
         """
         if len(shortnames) > 0:
-            return torch.stack(
-                [self[name][stat_name] for name in shortnames], dim=0
-            ).type(dtype)
+            tensors = [
+                torch.as_tensor(self[name][stat_name], dtype=dtype)
+                for name in shortnames
+            ]
+            return torch.stack(tensors, dim=0)
         else:
             return []
 
@@ -398,7 +428,9 @@ class SamplePreprocSettings:
     file_format: Literal["npy", "grib"] = "grib"
     members: Optional[Tuple[int]] = None
     noise_members: int = 0
-    noise_strategy: Literal["forcing", "stochastic_EPA"] = "forcing",
+    noise_strategy: Literal["forcing", "stochastic_EPA", "ddim", "CondLayerNorm"] = "forcing",
+    dynamical_downscaling: bool = False
+    shortcut_length: int = None,
     add_landsea_mask: bool = False
 
 

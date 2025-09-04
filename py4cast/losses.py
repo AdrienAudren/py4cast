@@ -8,59 +8,94 @@ from typing import Tuple
 
 import lightning.pytorch as pl
 import torch
+import torch.nn.functional as F
+import math
 from torch.nn import MSELoss
 
 from py4cast.datasets.base import DatasetInfo, NamedTensor
 
-class AlmostFairCRPS(torch.nn.Module):
-    def __init__(self, alpha=0.95):
+# class AlmostFairCRPS(torch.nn.Module):
+#     def __init__(self, alpha=0.95):
+#         super().__init__()
+#         self.alpha = alpha
+    
+#     def forward(self, preds, targets, epoch=None):
+#         """
+#         Compute almost fair CRPS (afCRPS) for ensemble forecasts.
+        
+#         Args:
+#             preds (torch.Tensor): Predictions of shape (B=members, pred_steps, W, H, d_f)
+#             targets (torch.Tensor): Targets of shape (pred_steps, W, H, d_f)
+        
+#         Returns:
+#             torch.Tensor: Computed afCRPS value.
+#         """
+#         M = preds.shape[0]  # Number of ensemble members
+#         epsilon = (1 - self.alpha) / M
+
+#         # |x_j - y|
+#         abs_diff = torch.abs(preds - targets)  # (M, T, W, H, d_f)
+
+#         # Compute all pairwise terms: |x_j - x_k|
+#         preds_j = preds.unsqueeze(1)  # (M, 1, T, W, H, d_f)
+#         preds_k = preds.unsqueeze(0)  # (1, M, T, W, H, d_f)
+#         pairwise_diff = torch.abs(preds_j - preds_k)  # (M, M, T, W, H, d_f)
+
+#         # Mask out diagonal (j == k) using a mask
+#         mask = ~torch.eye(M, dtype=torch.bool, device=preds.device)
+#         mask = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)  # (M, M, 1, 1, 1, 1)
+#         mask = mask.expand_as(pairwise_diff)
+#         pairwise_diff = pairwise_diff[mask].view(M, M - 1, *preds.shape[1:])  # (M, M-1, T, W, H, d_f)
+
+#         # Compute |x_j - y| + |x_k - y| for j ≠ k
+#         abs_j = abs_diff.unsqueeze(1)  # (M, 1, T, W, H, d_f)
+#         abs_k = abs_diff.unsqueeze(0)  # (1, M, T, W, H, d_f)
+#         pairwise_abs_sum = abs_j + abs_k  # (M, M, T, W, H, d_f)
+#         pairwise_abs_sum = pairwise_abs_sum[mask].view(M, M - 1, *preds.shape[1:])  # (M, M-1, T, W, H, d_f)
+
+#         # Final afCRPS computation
+#         afcrps = (pairwise_abs_sum - (1 - epsilon) * pairwise_diff).mean(dim=(0, 1)) / 2  # (T, W, H, d_f)
+
+#         return afcrps.unsqueeze(0)  # (1, T, W, H, d_f)
+
+class AlmostFairCRPS(torch.nn.Module): # Vectorized version of batched Almost Fair CRPS
+    def __init__(self, alpha=0.95, noise_members=4):
         super().__init__()
         self.alpha = alpha
-    
+        self.noise_members = noise_members  # Number of ensemble members
+
     def forward(self, preds, targets, epoch=None):
-        """
-        Compute almost fair CRPS (afCRPS) for ensemble forecasts.
-        
-        Args:
-            preds (torch.Tensor): Predictions of shape (B=members, pred_steps, W, H, d_f)
-            targets (torch.Tensor): Targets of shape (pred_steps, W, H, d_f)
-        
-        Returns:
-            torch.Tensor: Computed afCRPS value.
-        """
-        M = preds.shape[0]  # Number of ensemble members
-        # transitioning coefficient
-        # sigmoid_input = torch.tensor(0.1 * (epoch - 70))
-        # transitioning_coef = torch.sigmoid(sigmoid_input)
 
-        # print shape of target and preds
-        # breakpoint()
-        # print(f"preds shape: {preds.shape}")
-        # print(f"targets shape: {targets.shape}")
-
-        # Expand target dimensions if mean is used as proxy for CRPS ground truth
-        #targets = targets.mean(dim=0).unsqueeze(0)  # Shape: (1, pred_steps, W, H, d_f)
-
-        # Compute |x_j - y| term
-        abs_diff_target = torch.abs(preds - targets).mean(dim=0)  # Shape: (pred_steps, W, H, d_f)
-        
-        # Compute |x_j - x_k| term
-        preds_exp = preds.unsqueeze(0)  # Shape: (1, M, pred_steps, W, H, d_f)
-        preds_comp = preds.unsqueeze(1)  # Shape: (M, 1, pred_steps, W, H, d_f)
-        pairwise_abs_diff = torch.abs(preds_exp - preds_comp)  # Shape: (M, M, pred_steps, W, H, d_f)
-        
-        # Exclude self-comparisons by masking diagonal elements
-        pairwise_sum = pairwise_abs_diff.sum(dim=(0, 1))  # Sum over both member axes Shape: (pred_steps, W, H, d_f)
-        
-        # Compute epsilon (ϵ)
+        B = targets.shape[0] // self.noise_members  # effective batch size 
+        M = self.noise_members  # Number of ensemble members
         epsilon = (1 - self.alpha) / M
-        
-        # Compute afCRPS
-        afcrps = abs_diff_target - ((1 - epsilon) / (2 * M * (M - 1))) * pairwise_sum #* transitioning_coef # Shape: (pred_steps, W, H, d_f)
-        # breakpoint()
-        # print(f"afcrps shape: {afcrps.shape}")
-        
-        return afcrps.unsqueeze(0)  # Shape: (1, pred_steps, W, H, d_f)
+
+        # Reshape predictions and targets
+        preds = preds.view(B, M, *preds.shape[1:])        # (B, M, T, W, H, d_f)
+        targets = targets.view(B, M, *targets.shape[1:])    # (B, M, T, W, H, d_f)
+
+        abs_diff = torch.abs(preds - targets)             # (B, M, T, W, H, d_f)
+
+        # Pairwise differences: |x_j - x_k|
+        preds_j = preds.unsqueeze(2)                      # (B, M, 1, T, W, H, d_f)
+        preds_k = preds.unsqueeze(1)                      # (B, 1, M, T, W, H, d_f)
+        pairwise_diff = torch.abs(preds_j - preds_k)      # (B, M, M, T, W, H, d_f)
+
+        # |x_j - y| + |x_k - y|
+        abs_j = abs_diff.unsqueeze(2)                     # (B, M, 1, T, W, H, d_f)
+        abs_k = abs_diff.unsqueeze(1)                     # (B, 1, M, T, W, H, d_f)
+        pairwise_abs_sum = abs_j + abs_k                  # (B, M, M, T, W, H, d_f)
+
+        # Create off-diagonal mask (M, M)
+        mask = ~torch.eye(M, dtype=torch.bool, device=preds.device)  # (M, M)
+
+        # Apply mask per batch element
+        pairwise_diff = pairwise_diff[:, mask].view(B, M, M - 1, *preds.shape[2:])
+        pairwise_abs_sum = pairwise_abs_sum[:, mask].view(B, M, M - 1, *preds.shape[2:])
+
+        # Final computation
+        afcrps = (pairwise_abs_sum - (1 - epsilon) * pairwise_diff).mean(dim=(1, 2)) / 2  # (B, T, W, H, d_f)
+        return afcrps
 
 
 class Py4CastLoss(ABC):
@@ -149,8 +184,11 @@ class WeightedLoss(Py4CastLoss):
         exponent = 2.0 if self.loss.__class__ == MSELoss else 1.0
 
         for name in dataset_info.state_weights:
+            # loss_state_weight[name] = dataset_info.state_weights[name] / (
+            #     dataset_info.diff_stats[name]["std"] ** exponent
+            # )
             loss_state_weight[name] = dataset_info.state_weights[name] / (
-                dataset_info.diff_stats[name]["std"] ** exponent
+                dataset_info.stats[name]["std"] ** exponent
             )
         self.register_loss_state_buffers(
             lm, interior_mask, loss_state_weight, squeeze_mask=True
@@ -242,5 +280,189 @@ class ScaledLoss(Py4CastLoss):
         return mean_loss * self.weights(
             tuple(prediction.feature_names), prediction.device
         )
+
+
+
+
+class MultiScaleLoss(Py4CastLoss):
+    """
+    Compute a multi-scale loss function with band decomposition.
+    Each prediction and target is decomposed into frequency bands,
+    normalized by precomputed multi-scale stds, then reduced.
+    """
+
+    def prepare(
+        self,
+        lm: pl.LightningModule,
+        interior_mask: torch.Tensor,
+        dataset_info: DatasetInfo,
+        max_scale_power: int = 5,
+    ) -> None:
+        self.max_scale_power = max_scale_power
+        self.scales = [2 ** i for i in reversed(range(max_scale_power + 1))]
+        self.n_scales = len(self.scales)
+
+        # Build state weights normalized by scale-dependent stds
+        loss_state_weight = {}
+        for name in dataset_info.state_weights:
+            # shape (n_scales,)
+            stds = torch.tensor(dataset_info.multi_scale_stats[name]["std"])
+            inv_stds = 1 / stds
+            # Normalize to sum to 1
+            weights = inv_stds / inv_stds.sum()
+            loss_state_weight[name] = dataset_info.state_weights[name] * weights
+            # print(f"MultiScaleLoss: feature {name}, stds {stds}")
+            # print(f"DatasetInfo: feature {name}, weights {dataset_info.state_weights[name]}")
+            # print(f"MultiScaleLoss: feature {name}, weights {loss_state_weight[name]}")
+
+        self.register_loss_state_buffers(
+            lm, interior_mask, loss_state_weight, squeeze_mask=True
+        )
+        self.lm = lm
+
+    # def smooth(self, x: torch.Tensor, scale: int = 1) -> NamedTensor:
+    #     # Unpack shape
+    #     B, T, N_lat, N_lon, d_f = x.tensor.shape
+
+    #     # Rearrange for interpolation: (B*T, d_f, N_lat, N_lon)
+    #     aro_outputs = x.tensor.view(B * T, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
+
+    #     # Compute low-res dimensions
+    #     N_lat_low = N_lat // scale
+    #     N_lon_low = N_lon // scale
+
+    #     # Downsample
+    #     aro_outputs_lowres = torch.nn.functional.interpolate(
+    #         aro_outputs, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
+    #     )
+
+    #     # Upsample back
+    #     aro_outputs_upsampled = torch.nn.functional.interpolate(
+    #         aro_outputs_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
+    #     )
+
+    #     # Rearrange back to (B, T, N_lat, N_lon, d_f)
+    #     aro_outputs_upsampled_tensor = aro_outputs_upsampled.permute(0, 2, 3, 1).view(B, T, N_lat, N_lon, d_f)
+
+    #     # Wrap into NamedTensor
+    #     aro_outputs_upsampled_nt = NamedTensor.new_like(
+    #         aro_outputs_upsampled_tensor.type_as(x.tensor), x
+    #     )
+    #     return aro_outputs_upsampled_nt
+
+    def smooth(self, x: torch.Tensor, n: int = 1) -> NamedTensor:
+        # Unpack shape
+        B, T, N_lat, N_lon, d_f = x.tensor.shape
+        # Rearrange for interpolation: (B*T, d_f, N_lat, N_lon)
+        aro_inputs = x.tensor.view(B * T, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
+
+        # Map scale factor n -> equivalent Gaussian sigma
+        sigma = n / math.sqrt(3.0)
+
+        # Build Gaussian kernel
+        kernel_size = int(6 * sigma + 1)
+        if kernel_size % 2 == 0:  # ensure odd
+            kernel_size += 1
+
+        coords = torch.arange(kernel_size, device=aro_inputs.device, dtype=aro_inputs.dtype) - kernel_size // 2
+        g_1d = torch.exp(-0.5 * (coords / sigma) ** 2)
+        g_1d /= g_1d.sum()
+
+
+        # Separable 2D kernel
+        g_2d = torch.outer(g_1d, g_1d)
+        g_2d /= g_2d.sum()
+
+        # Depthwise conv kernel
+        g_kernel = g_2d.view(1, 1, kernel_size, kernel_size).to(aro_inputs.dtype).to(aro_inputs.device)
+        g_kernel = g_kernel.repeat(d_f, 1, 1, 1)  # one kernel per channel
+
+        # Padding for "same" output size
+        pad = kernel_size // 2
+        aro_inputs_padded = F.pad(aro_inputs, (pad, pad, pad, pad), mode="reflect")
+
+        # Apply depthwise convolution
+        aro_outputs = F.conv2d(aro_inputs_padded, g_kernel, groups=d_f)
+
+        # Rearrange back to (B, T, N_lat, N_lon, d_f)
+        aro_outputs_tensor = aro_outputs.permute(0, 2, 3, 1).view(B, T, N_lat, N_lon, d_f)
+
+        # Wrap into NamedTensor
+        aro_outputs_nt = NamedTensor.new_like(
+            aro_outputs_tensor.type_as(x.tensor), x
+        )
+        return aro_outputs_nt
+
+    def decompose_bands(self, tensor: NamedTensor) -> list[torch.Tensor]:
+        """
+        Perform smoothing at multiple scales and compute frequency bands.
+        Returns list of tensors (one per scale) with same shape as input.
+        """
+        smooths = [
+            self.smooth(tensor, n=s) if s != 1 else tensor
+            for s in self.scales
+        ]
+        bands = []
+        for i in range(len(self.scales) - 1):
+            band = NamedTensor.new_like(
+                (smooths[i + 1].tensor - smooths[i].tensor).type_as(tensor.tensor),
+                tensor,
+            )
+            bands.append(band)
+        bands.insert(0, smooths[0])  # lowest frequency
+        return bands
+
+    def forward(
+        self,
+        prediction: NamedTensor,
+        target: NamedTensor,
+        epoch=None,
+        reduce_spatial_dim=True,
+    ) -> torch.Tensor:
+        """
+        prediction/target: (B, pred_steps, N_lat, N_lon, d_f)
+        returns (B, pred_steps)
+        """
+
+        # Decompose into bands
+        pred_bands = self.decompose_bands(prediction)
+        tgt_bands = self.decompose_bands(target)
+
+        # Stack along n_scale: (B, pred_steps, N_lat, N_lon, n_scale, d_f)
+        pred_stack = torch.stack([pb.tensor for pb in pred_bands], dim=-2)
+        tgt_stack = torch.stack([tb.tensor for tb in tgt_bands], dim=-2)
+
+        # Compute per-scale loss
+        if self.loss.__class__ == AlmostFairCRPS:
+            torch_loss = self.loss(pred_stack, tgt_stack, epoch)
+        else:
+            torch_loss = self.loss(pred_stack, tgt_stack)
+        # shape: (B, pred_steps, N_lat, N_lon, n_scale, d_f)
+
+        # Retrieve weights: shape (n_scale, d_f)
+        weights = []
+        for i, name in enumerate(prediction.feature_names):
+            weights.append(self.loss_state_weight[name])  # (n_scale,)
+        weights = torch.stack(weights, dim=-1).to(prediction.device)  # (n_scale, d_f)
+
+        # Apply weights
+        weighted_loss = torch_loss * weights  # broadcast
+
+        # Reduce over feature + scale dims
+        weighted_loss = weighted_loss.sum(dim=-1).sum(dim=-1)  # (B, pred_steps, N_lat, N_lon)
+
+        if not reduce_spatial_dim:
+            return weighted_loss
+
+        # Apply spatial mask and reduce
+        time_step_mean_loss = (
+            torch.sum(
+                weighted_loss * self.lm.interior_mask_s,
+                dim=target.spatial_dim_idx,
+            )
+            / self.num_interior
+        )
+        # Final shape: (B, pred_steps)
+        return time_step_mean_loss
 
 

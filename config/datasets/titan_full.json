@@ -1,13 +1,13 @@
 {
     "periods": {
         "train": {
-            "start": 2020010103,
-            "end": 2022123123,
+            "start": 2021010100,
+            "end": 2021010100,
             "obs_step": 3600
         },
         "valid": {
-            "start": 2023010103,
-            "end": 2023123123,
+            "start": 2023010102,
+            "end": 2023051101,
             "obs_step": 3600,
             "obs_step_btw_t0": 10800
         },
@@ -34,6 +34,14 @@
             "levels": [2],
             "kind": "input_output"
         },
+        "aro_r2": {
+            "levels": [2],
+            "kind": "input_output"
+        },
+        "aro_tp": {
+            "levels": [0],
+            "kind": "input_output"
+        },
         "aro_u10": {
             "levels": [10],
             "kind": "input_output"
@@ -42,17 +50,38 @@
             "levels": [10],
             "kind": "input_output"
         },
-        "aro_tp": {
-            "levels": [0],
+        "aro_t": {
+            "levels": [250, 500, 700, 850],
             "kind": "input_output"
         },
-        "aro_t": {
-            "levels": [850],
+        "aro_u": {
+            "levels": [250, 500, 700, 850],
+            "kind": "input_output"
+        },
+        "aro_v": {
+            "levels": [250, 500, 700, 850],
             "kind": "input_output"
         },
         "aro_z": {
-            "levels": [500],
+            "levels": [250, 500, 700, 850],
             "kind": "input_output"
+        },
+        "arp_t": {
+            "levels": [250, 500, 700, 850],
+            "kind": "input"
+        },
+        "arp_u":{
+            "levels": [250, 500, 700, 850],
+            "kind": "input"
+        },
+        "arp_v":{
+            "levels": [250, 500, 700, 850],
+            "kind": "input"
+        },
+        "arp_z":{
+            "levels": [250, 500, 700, 850],
+            "kind": "input"
         }
     }
+    
 }
