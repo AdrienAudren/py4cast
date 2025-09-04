@@ -61,8 +61,8 @@ class Period:
     refcst_leadtime_step_in_sec: int = None  # step between 2 consecutives leadtimes
 
     def __post_init__(self):
-        self.start = dt.datetime.strptime(str(self.start), "%Y%m%d")
-        self.end = dt.datetime.strptime(str(self.end), "%Y%m%d")
+        self.start = dt.datetime.strptime(str(self.start), "%Y%m%d%H")
+        self.end = dt.datetime.strptime(str(self.end), "%Y%m%d%H")
 
         if (
             self.obs_step,

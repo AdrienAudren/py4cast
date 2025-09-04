@@ -2,7 +2,7 @@
     "periods": {
         "train": {
             "start": 2021010100,
-            "end": 2021010100,
+            "end": 2022123100,
             "obs_step": 3600
         },
         "valid": {
@@ -15,7 +15,7 @@
             "start": 2023050122,
             "end": 2023080122,
             "obs_step": 3600,
-            "obs_step_btw_t0": 86400
+            "obs_step_btw_t0": 3600
         }
     },
     "grid":{

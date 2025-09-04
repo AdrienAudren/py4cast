@@ -337,8 +337,8 @@ class AutoRegressiveLightning(LightningModule):
         elif loss_name == "mae":
             self.loss = WeightedLoss("L1Loss", reduction="none")
         elif loss_name == "afcrps":
-            # self.loss = WeightedLoss("AFCRPS", reduction="none")
-            self.loss = MultiScaleLoss("AFCRPS", reduction="none")
+            self.loss = WeightedLoss("AFCRPS", reduction="none")
+            # self.loss = MultiScaleLoss("AFCRPS", reduction="none")
         else:
             raise TypeError(f"Unknown loss function: {loss_name}")
         self.loss.prepare(self, statics.interior_mask, dataset_info)
