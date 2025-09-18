@@ -10,7 +10,7 @@ import cartopy
 import einops
 import matplotlib
 import matplotlib.pyplot as plt
-import seaborn as sns
+# import seaborn as sns
 from scipy.stats import wasserstein_distance
 import numpy as np
 import torch

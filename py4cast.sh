@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=3
 ##SBATCH --begin=21:00:00
 ##SBATCH --time=120:00:00
-#SBATCH --job-name=Mscale
+#SBATCH --job-name=crps
 #SBATCH --exclusive
 ##SBATCH -w pise34
 
@@ -29,7 +29,7 @@ export NCCL_DEBUG=INFO
 
 #--bind /home_nfs/audrena/py4cast/py4cast:/opt/conda/lib/python3.11/site-packages/py4cast \ once py4cast repo updated
 
-time srun --mpi=pmix_v3 \
+time srun --mpi=pmix \
     singularity exec \
         --nv \
         --no-home \

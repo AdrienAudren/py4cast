@@ -14,65 +14,25 @@ from torch.nn import MSELoss
 
 from py4cast.datasets.base import DatasetInfo, NamedTensor
 
-# class AlmostFairCRPS(torch.nn.Module):
-#     def __init__(self, alpha=0.95):
-#         super().__init__()
-#         self.alpha = alpha
-    
-#     def forward(self, preds, targets, epoch=None):
-#         """
-#         Compute almost fair CRPS (afCRPS) for ensemble forecasts.
-        
-#         Args:
-#             preds (torch.Tensor): Predictions of shape (B=members, pred_steps, W, H, d_f)
-#             targets (torch.Tensor): Targets of shape (pred_steps, W, H, d_f)
-        
-#         Returns:
-#             torch.Tensor: Computed afCRPS value.
-#         """
-#         M = preds.shape[0]  # Number of ensemble members
-#         epsilon = (1 - self.alpha) / M
-
-#         # |x_j - y|
-#         abs_diff = torch.abs(preds - targets)  # (M, T, W, H, d_f)
-
-#         # Compute all pairwise terms: |x_j - x_k|
-#         preds_j = preds.unsqueeze(1)  # (M, 1, T, W, H, d_f)
-#         preds_k = preds.unsqueeze(0)  # (1, M, T, W, H, d_f)
-#         pairwise_diff = torch.abs(preds_j - preds_k)  # (M, M, T, W, H, d_f)
-
-#         # Mask out diagonal (j == k) using a mask
-#         mask = ~torch.eye(M, dtype=torch.bool, device=preds.device)
-#         mask = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)  # (M, M, 1, 1, 1, 1)
-#         mask = mask.expand_as(pairwise_diff)
-#         pairwise_diff = pairwise_diff[mask].view(M, M - 1, *preds.shape[1:])  # (M, M-1, T, W, H, d_f)
-
-#         # Compute |x_j - y| + |x_k - y| for j ≠ k
-#         abs_j = abs_diff.unsqueeze(1)  # (M, 1, T, W, H, d_f)
-#         abs_k = abs_diff.unsqueeze(0)  # (1, M, T, W, H, d_f)
-#         pairwise_abs_sum = abs_j + abs_k  # (M, M, T, W, H, d_f)
-#         pairwise_abs_sum = pairwise_abs_sum[mask].view(M, M - 1, *preds.shape[1:])  # (M, M-1, T, W, H, d_f)
-
-#         # Final afCRPS computation
-#         afcrps = (pairwise_abs_sum - (1 - epsilon) * pairwise_diff).mean(dim=(0, 1)) / 2  # (T, W, H, d_f)
-
-#         return afcrps.unsqueeze(0)  # (1, T, W, H, d_f)
-
-class AlmostFairCRPS(torch.nn.Module): # Vectorized version of batched Almost Fair CRPS
-    def __init__(self, alpha=0.95, noise_members=4):
+class AlmostFairCRPS(torch.nn.Module): # Batched Almost Fair CRPS
+    """
+    AIFS-CRPS: Ensemble forecasting using a model trained with a loss function based on the Continuous Ranked Probability Score
+    https://arxiv.org/abs/2412.15832
+    """
+    def __init__(self, alpha=0.95):
         super().__init__()
         self.alpha = alpha
-        self.noise_members = noise_members  # Number of ensemble members
 
-    def forward(self, preds, targets, epoch=None):
+    def forward(self, preds, targets, noise_members=4):
 
-        B = targets.shape[0] // self.noise_members  # effective batch size 
-        M = self.noise_members  # Number of ensemble members
+        B = targets.shape[0] # effective batch size 
+        M = noise_members  # Number of ensemble members
         epsilon = (1 - self.alpha) / M
 
-        # Reshape predictions and targets
-        preds = preds.view(B, M, *preds.shape[1:])        # (B, M, T, W, H, d_f)
-        targets = targets.view(B, M, *targets.shape[1:])    # (B, M, T, W, H, d_f)
+        # Reshape predictions 
+        preds = preds.reshape(B, M, *preds.shape[1:])        # (B, M, T, W, H, d_f)
+        # Replicate targets along the members dimension
+        targets = targets.unsqueeze(1).expand(-1, M, *targets.shape[1:])  # (B, M, T, W, H, d_f)
 
         abs_diff = torch.abs(preds - targets)             # (B, M, T, W, H, d_f)
 
@@ -181,15 +141,9 @@ class WeightedLoss(Py4CastLoss):
         # build the dictionnary of weight
         loss_state_weight = {}
 
-        exponent = 2.0 if self.loss.__class__ == MSELoss else 1.0
-
         for name in dataset_info.state_weights:
-            # loss_state_weight[name] = dataset_info.state_weights[name] / (
-            #     dataset_info.diff_stats[name]["std"] ** exponent
-            # )
-            loss_state_weight[name] = dataset_info.state_weights[name] / (
-                dataset_info.stats[name]["std"] ** exponent
-            )
+            loss_state_weight[name] = torch.tensor(dataset_info.state_weights[name])
+
         self.register_loss_state_buffers(
             lm, interior_mask, loss_state_weight, squeeze_mask=True
         )
@@ -210,7 +164,7 @@ class WeightedLoss(Py4CastLoss):
 
         # Compute Torch loss (defined in the parent class when this Mixin is used)
         if self.loss.__class__ == AlmostFairCRPS:
-            torch_loss = self.loss(prediction.tensor, target.tensor, epoch)
+            torch_loss = self.loss(prediction.tensor, target.tensor, noise_members=self.lm.noise_members)
         else:
             torch_loss = self.loss(prediction.tensor, target.tensor)
         # Retrieve the weights for each feature
@@ -261,7 +215,7 @@ class ScaledLoss(Py4CastLoss):
         """
         # Compute Torch loss (defined in the parent class when this Mixin is used)
         if self.loss.__class__ == AlmostFairCRPS:
-            torch_loss = self.loss(prediction.tensor, target.tensor, epoch)
+            torch_loss = self.loss(prediction.tensor, target.tensor, noise_members=self.lm.noise_members)
         else:
             torch_loss = self.loss(prediction.tensor, target.tensor)
 
@@ -289,6 +243,7 @@ class MultiScaleLoss(Py4CastLoss):
     Compute a multi-scale loss function with band decomposition.
     Each prediction and target is decomposed into frequency bands,
     normalized by precomputed multi-scale stds, then reduced.
+    Requires multi_scale_stats.
     """
 
     def prepare(
@@ -434,7 +389,7 @@ class MultiScaleLoss(Py4CastLoss):
 
         # Compute per-scale loss
         if self.loss.__class__ == AlmostFairCRPS:
-            torch_loss = self.loss(pred_stack, tgt_stack, epoch)
+            torch_loss = self.loss(pred_stack, tgt_stack, noise_members=self.lm.noise_members)
         else:
             torch_loss = self.loss(pred_stack, tgt_stack)
         # shape: (B, pred_steps, N_lat, N_lon, n_scale, d_f)

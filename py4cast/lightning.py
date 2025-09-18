@@ -12,6 +12,8 @@ import einops
 import matplotlib
 import mlflow.pytorch
 import torch
+import torch.nn.functional as F
+import math
 from lightning import LightningDataModule, LightningModule
 from lightning.pytorch.loggers import MLFlowLogger
 from lightning.pytorch.utilities import rank_zero_only
@@ -288,7 +290,12 @@ class AutoRegressiveLightning(LightningModule):
             num_input_steps * dataset_info.weather_dim
             + num_grid_static_features
             + dataset_info.forcing_dim
+            + (1 if self.noise_strategy == "forcing" else 0)
         )
+        # print(f"num_input_features : {num_input_features}")
+        # print(f"num_grid_static_features : {num_grid_static_features}")
+        # print(f"num_forcing_features : {dataset_info.forcing_dim}")
+        # print(f"num_weather_features : {dataset_info.weather_dim}")
 
         num_output_features = dataset_info.weather_dim
 
@@ -527,9 +534,48 @@ class AutoRegressiveLightning(LightningModule):
         pred = pred + sigma_t * eps_t
 
         return pred
+    
+    def smooth(self, x: torch.Tensor, n: int = 1) -> torch.Tensor:
+        # Unpack shape
+        B, N_lat, N_lon, d_f = x.shape
+        # Rearrange for interpolation: (B, d_f, N_lat, N_lon)
+        aro_inputs = x.view(B, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
+
+        # Map scale factor n -> equivalent Gaussian sigma
+        sigma = n / math.sqrt(3.0)
+
+        # Build Gaussian kernel
+        kernel_size = int(6 * sigma + 1)
+        if kernel_size % 2 == 0:  # ensure odd
+            kernel_size += 1
+
+        coords = torch.arange(kernel_size, device=aro_inputs.device, dtype=aro_inputs.dtype) - kernel_size // 2
+        g_1d = torch.exp(-0.5 * (coords / sigma) ** 2)
+        g_1d /= g_1d.sum()
+
+
+        # Separable 2D kernel
+        g_2d = torch.outer(g_1d, g_1d)
+        g_2d /= g_2d.sum()
+
+        # Depthwise conv kernel
+        g_kernel = g_2d.view(1, 1, kernel_size, kernel_size).to(aro_inputs.dtype).to(aro_inputs.device)
+        g_kernel = g_kernel.repeat(d_f, 1, 1, 1)  # one kernel per channel
+
+        # Padding for "same" output size
+        pad = kernel_size // 2
+        aro_inputs_padded = F.pad(aro_inputs, (pad, pad, pad, pad), mode="reflect")
+
+        # Apply depthwise convolution
+        aro_outputs = F.conv2d(aro_inputs_padded, g_kernel, groups=d_f)
+
+        # Rearrange back to (B, T, N_lat, N_lon, d_f)
+        aro_outputs_tensor = aro_outputs.permute(0, 2, 3, 1).view(B, N_lat, N_lon, d_f)
+
+        return aro_outputs_tensor
 
     def _next_x(
-        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int, t: int = None, dt: float = None, st: torch.Tensor = None, ft: torch.Tensor = None
+        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int, noise: bool = False, t: int = None, dt: float = None, st: torch.Tensor = None, ft: torch.Tensor = None
     ) -> torch.Tensor:
         """
         Build the next x input for the model at timestep step_idx using the :
@@ -757,6 +803,18 @@ class AutoRegressiveLightning(LightningModule):
                     dim=forcing.dim_index("features"),
                 )
                 # x = torch.cat(
+                #     [self.grid_static_features[: batch.batch_size], forcing_tensor],
+                #     dim=forcing.dim_index("features"),
+                # )
+                # x = torch.cat(
+                #     [
+                #         self.smooth(prev_states.select_dim("timestep", idx), n=4)
+                #         for idx in range(batch.num_input_steps)    # pay attention here, for flow matching multi input steps shouldn't be allowed for constructing x0
+                #     ]
+                #     + [self.grid_static_features[: batch.batch_size], forcing_tensor],
+                #     dim=forcing.dim_index("features"),
+                # )
+                # x = torch.cat(
                 #     [
                 #         prev_states.select_dim("timestep", idx)
                 #         for idx in range(batch.num_input_steps)    # pay attention here, for flow matching multi input steps shouldn't be allowed for constructing x0
@@ -765,6 +823,15 @@ class AutoRegressiveLightning(LightningModule):
                 #     +[external_forcings],
                 #     dim=forcing.dim_index("features"),
                 # )
+                if noise and self.noise_strategy == "forcing":
+                    # concatenate noise channel as a forcing
+                    x = torch.cat(
+                        [
+                            torch.cat([x, torch.randn_like(forcing_tensor[..., 0].unsqueeze(-1))], dim=forcing.dim_index("features")).unsqueeze(1) for _ in range(self.noise_members)
+                        ],
+                        dim=1,
+                    )
+                    x = x.reshape(self.batch_size*self.noise_members, *x.shape[2:])
                 
         return x
 
@@ -973,7 +1040,14 @@ class AutoRegressiveLightning(LightningModule):
             for k in range(num_inter_steps):
                 x = self._next_x(batch, prev_states, i)
                 if self.noise_strategy == "CondLayerNorm":
-                    epsilon = torch.randn(self.batch_size, 32, device=prev_states.device)
+                    # generate (32,) noise vectors for stochastic conditional layer normalization
+                    # Skillful joint probabilistic weather forecasting from marginals: https://arxiv.org/pdf/2506.10772
+                    epsilon = torch.randn(self.batch_size*self.noise_members, 32, device=prev_states.device)
+
+                elif self.noise_strategy == "forcing":
+                    # Add noise channel as forcing with noise=True
+                    x = self._next_x(batch, prev_states, i, noise=True)
+
                 # Graph (B, N_grid, d_f) or Conv (B, N_lat,N_lon d_f)
                 if self.channels_last:
                     x = x.to(memory_format=torch.channels_last)
@@ -982,12 +1056,14 @@ class AutoRegressiveLightning(LightningModule):
                 if self.model.features_second:
                     x = features_last_to_second(x)
                     if self.noise_strategy == "CondLayerNorm":
+                        x = x.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *x.shape[1:])
                         y = self.model(x, cond_z=epsilon)
                     else:   
                         y = self.model(x)
                     y = features_second_to_last(y)
                 else:
                     if self.noise_strategy == "CondLayerNorm":
+                        x = x.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *x.shape[1:])
                         y = self.model(x, cond_z=epsilon)
                     else:
                         y = self.model(x)
@@ -1042,9 +1118,14 @@ class AutoRegressiveLightning(LightningModule):
                     #     + y * step_diff_std
                     #     + step_diff_mean
                     # )
+                    # last_prev_state = prev_states.select_dim("timestep", -1)
+                    # if self.noise_strategy in ["CondLayerNorm", "forcing"]:
+                    #     last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
+
+
                     # predicted_state = (
                     #     # select the last timestep
-                    #     prev_states.select_dim("timestep", -1)
+                    #     last_prev_state
                     #     + y * step_diff_std
                     #     + step_diff_mean
                     # )
@@ -1062,8 +1143,8 @@ class AutoRegressiveLightning(LightningModule):
                 # Force it to true state for all intermediary step
                 if not inference and force_border:
                     new_state = (
-                        self.border_mask * border_state
-                        + self.interior_mask * predicted_state
+                        self.border_mask.expand_as(predicted_state) * border_state.repeat(self.noise_members, 1, 1, 1)
+                        + self.interior_mask.expand_as(predicted_state) * predicted_state
                     )
                 else:
                     new_state = predicted_state
@@ -1458,38 +1539,7 @@ class AutoRegressiveLightning(LightningModule):
             avg_loss = torch.stack([x for x in outputs]).mean()
             tb = self.logger.experiment
             tb.add_scalar(f"mean_loss_epoch/{label}", avg_loss, self.current_epoch)
-    
-    def smooth(self, x: torch.Tensor, scale: int = 1) -> NamedTensor:
-        # Unpack shape
-        B, T, N_lat, N_lon, d_f = x.tensor.shape
-
-        # Rearrange for interpolation: (B*T, d_f, N_lat, N_lon)
-        aro_outputs = x.tensor.view(B * T, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
-
-        # Compute low-res dimensions
-        N_lat_low = N_lat // scale
-        N_lon_low = N_lon // scale
-
-        # Downsample
-        aro_outputs_lowres = torch.nn.functional.interpolate(
-            aro_outputs, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
-        )
-
-        # Upsample back
-        aro_outputs_upsampled = torch.nn.functional.interpolate(
-            aro_outputs_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
-        )
-
-        # Rearrange back to (B, T, N_lat, N_lon, d_f)
-        aro_outputs_upsampled_tensor = aro_outputs_upsampled.permute(0, 2, 3, 1).view(B, T, N_lat, N_lon, d_f)
-
-        # Wrap into NamedTensor
-        aro_outputs_upsampled_nt = NamedTensor.new_like(
-            aro_outputs_upsampled_tensor.type_as(x.tensor), x
-        )
-        return aro_outputs_upsampled_nt
         
-
     def training_step(self, batch: ItemBatch, batch_idx: int) -> torch.Tensor:
         """
         Train on single batch
@@ -1518,75 +1568,6 @@ class AutoRegressiveLightning(LightningModule):
                 plotter.update(self, prediction=self.prediction, target=self.target)
 
         return batch_loss
-
-    # def training_step(self, batch: ItemBatch, batch_idx: int) -> torch.Tensor:
-    #     """
-    #     Train on single batch using frequency-sliced loss (LF, MF, HF)
-    #     """
-    #     max_scale_power = 5
-
-    #     if batch_idx == 0:
-    #         self.input_feature_names = batch.inputs.feature_names
-    #         self.output_feature_names = batch.outputs.feature_names
-    #         self.output_dim_names = batch.outputs.names
-    #         self.output_dtype = batch.outputs.tensor.dtype
-
-    #     if self.shortcut_length is not None:
-    #         prediction, target = self.common_step_FM_training(batch)
-    #         batch_loss = torch.mean(self.loss(prediction, target, epoch=self.current_epoch))
-    #     else:
-    #         prediction, target = self.common_step(batch)
-
-    #         # Generate smoothing scales (e.g., for max_scale_power=2: [4, 2, 1])
-    #         scales = [2 ** i for i in reversed(range(max_scale_power + 1))]
-
-    #         # Smooth predictions and targets at all scales
-    #         smooth_preds = [self.smooth(prediction, scale=s) if s != 1 else prediction for s in scales]
-    #         smooth_tgts = [self.smooth(target, scale=s) if s != 1 else target for s in scales]
-
-    #         # Compute frequency bands as differences between successive smoothings
-    #         pred_bands = []
-    #         tgt_bands = []
-    #         for i in range(len(scales) - 1):
-    #             pred_band = NamedTensor.new_like(
-    #                 (smooth_preds[i + 1].tensor - smooth_preds[i].tensor).type_as(prediction.tensor), prediction
-    #             )
-    #             tgt_band = NamedTensor.new_like(
-    #                 (smooth_tgts[i + 1].tensor - smooth_tgts[i].tensor).type_as(target.tensor), target
-    #             )
-    #             pred_bands.append(pred_band)
-    #             tgt_bands.append(tgt_band)
-
-    #         # Add lowest frequency band (i.e., the most smoothed one)
-    #         pred_bands.insert(0, smooth_preds[0])
-    #         tgt_bands.insert(0, smooth_tgts[0])
-
-    #         # Weighting: 1/scales
-    #         # weights = [1/scales[i] for i in range(len(scales))]
-    #         # total_weight = sum(weights)
-
-    #         with torch.no_grad():
-    #             raw_weights = torch.tensor([1.0 / (torch.mean(self.loss(pb, tb, epoch=self.current_epoch)).detach() + 1e-8) 
-    #                                         for pb, tb in zip(pred_bands, tgt_bands)])
-    #         weights = raw_weights / raw_weights.sum()
-
-    #         # Compute weighted loss
-    #         weighted_losses = []
-    #         for pred_band, tgt_band, weight in zip(pred_bands, tgt_bands, weights):
-    #             band_loss = torch.mean(self.loss(pred_band, tgt_band, epoch=self.current_epoch))
-    #             weighted_losses.append(weight * band_loss)
-
-    #         # batch_loss = sum(weighted_losses) / total_weight
-    #         batch_loss = sum(weighted_losses)
-
-    #     self.training_step_losses.append(batch_loss)
-
-    #     # Notify every plotters
-    #     if self.logging_enabled:
-    #         for plotter in self.train_plotters:
-    #             plotter.update(self, prediction=self.prediction, target=self.target)
-
-    #     return batch_loss
 
     def on_save_checkpoint(self, checkpoint):
         """
@@ -1751,6 +1732,17 @@ class AutoRegressiveLightning(LightningModule):
         self.validation_step_losses.append(mean_loss)
 
         self.val_mean_loss = mean_loss
+
+        if self.noise_members > 1:
+            # select random member for preds
+            # prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
+            # member = prediction_tensor[:, torch.randint(0, self.noise_members, (1,)).item()]
+            # prediction = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
+
+            # select mean of members 
+            prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
+            member = torch.mean(prediction_tensor, dim=1)
+            prediction = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
 
         if self.logging_enabled:
             # Notify every plotters
