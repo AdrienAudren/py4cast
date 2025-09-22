@@ -1,11 +1,11 @@
 data:
   #args forwarded (linked) to model
   dataset_name: titan_refacto2
-  num_input_steps: 2
+  num_input_steps: 1
   num_pred_steps_train: 1
-  num_pred_steps_val_test: 41
+  num_pred_steps_val_test: 1
   batch_size: 2 # per device    
-  noise_members: 1 # total number of members
+  noise_members: 2 # total number of members
   noise_strategy: "CondLayerNorm" # 
   # shortcut_length: 1 # Flow matching: {1, 2, ..., 128}, DDIM: {1 = from prior, 10 = generative}
   dynamical_downscaling: False # dynamically downscale the forcing, only for flow matching

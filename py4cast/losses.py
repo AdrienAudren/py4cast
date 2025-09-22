@@ -245,6 +245,9 @@ class MultiScaleLoss(Py4CastLoss):
     normalized by precomputed multi-scale stds, then reduced.
     Requires multi_scale_stats.
     """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._kernel_cache = {}  # cache kernels per (n, device, dtype)
 
     def prepare(
         self,
@@ -305,48 +308,88 @@ class MultiScaleLoss(Py4CastLoss):
     #     )
     #     return aro_outputs_upsampled_nt
 
-    def smooth(self, x: torch.Tensor, n: int = 1) -> NamedTensor:
-        # Unpack shape
-        B, T, N_lat, N_lon, d_f = x.tensor.shape
-        # Rearrange for interpolation: (B*T, d_f, N_lat, N_lon)
-        aro_inputs = x.tensor.view(B * T, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
+    # def smooth(self, x: torch.Tensor, n: int = 1) -> NamedTensor:
+    #     # Unpack shape
+    #     B, T, N_lat, N_lon, d_f = x.tensor.shape
+    #     # Rearrange for interpolation: (B*T, d_f, N_lat, N_lon)
+    #     aro_inputs = x.tensor.view(B * T, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
 
-        # Map scale factor n -> equivalent Gaussian sigma
+    #     # Map scale factor n -> equivalent Gaussian sigma
+    #     sigma = n / math.sqrt(3.0)
+
+    #     # Build Gaussian kernel
+    #     kernel_size = int(6 * sigma + 1)
+    #     if kernel_size % 2 == 0:  # ensure odd
+    #         kernel_size += 1
+
+    #     coords = torch.arange(kernel_size, device=aro_inputs.device, dtype=aro_inputs.dtype) - kernel_size // 2
+    #     g_1d = torch.exp(-0.5 * (coords / sigma) ** 2)
+    #     g_1d /= g_1d.sum()
+
+
+    #     # Separable 2D kernel
+    #     g_2d = torch.outer(g_1d, g_1d)
+    #     g_2d /= g_2d.sum()
+
+    #     # Depthwise conv kernel
+    #     g_kernel = g_2d.view(1, 1, kernel_size, kernel_size).to(aro_inputs.dtype).to(aro_inputs.device)
+    #     g_kernel = g_kernel.repeat(d_f, 1, 1, 1)  # one kernel per channel
+
+    #     # Padding for "same" output size
+    #     pad = kernel_size // 2
+    #     aro_inputs_padded = F.pad(aro_inputs, (pad, pad, pad, pad), mode="reflect")
+
+    #     # Apply depthwise convolution
+    #     aro_outputs = F.conv2d(aro_inputs_padded, g_kernel, groups=d_f)
+
+    #     # Rearrange back to (B, T, N_lat, N_lon, d_f)
+    #     aro_outputs_tensor = aro_outputs.permute(0, 2, 3, 1).view(B, T, N_lat, N_lon, d_f)
+
+    #     # Wrap into NamedTensor
+    #     aro_outputs_nt = NamedTensor.new_like(
+    #         aro_outputs_tensor.type_as(x.tensor), x
+    #     )
+    #     return aro_outputs_nt
+
+    def _get_gaussian_1d(self, n: int, device, dtype) -> torch.Tensor:
+        """
+        Return cached 1D Gaussian kernel for scale n.
+        """
+        key = (n, device, dtype)
+        if key in self._kernel_cache:
+            return self._kernel_cache[key]
+
         sigma = n / math.sqrt(3.0)
-
-        # Build Gaussian kernel
         kernel_size = int(6 * sigma + 1)
-        if kernel_size % 2 == 0:  # ensure odd
+        if kernel_size % 2 == 0:
             kernel_size += 1
 
-        coords = torch.arange(kernel_size, device=aro_inputs.device, dtype=aro_inputs.dtype) - kernel_size // 2
+        coords = torch.arange(kernel_size, device=device, dtype=dtype) - kernel_size // 2
         g_1d = torch.exp(-0.5 * (coords / sigma) ** 2)
         g_1d /= g_1d.sum()
 
+        self._kernel_cache[key] = g_1d
+        return g_1d
 
-        # Separable 2D kernel
-        g_2d = torch.outer(g_1d, g_1d)
-        g_2d /= g_2d.sum()
+    def smooth(self, x: torch.Tensor, n: int = 1) -> NamedTensor:
+        B, T, N_lat, N_lon, d_f = x.tensor.shape
+        aro_inputs = x.tensor.view(B * T, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
 
-        # Depthwise conv kernel
-        g_kernel = g_2d.view(1, 1, kernel_size, kernel_size).to(aro_inputs.dtype).to(aro_inputs.device)
-        g_kernel = g_kernel.repeat(d_f, 1, 1, 1)  # one kernel per channel
+        g_1d = self._get_gaussian_1d(n, aro_inputs.device, aro_inputs.dtype)
 
-        # Padding for "same" output size
-        pad = kernel_size // 2
+        # Build separable kernels
+        g_row = g_1d.view(1, 1, 1, -1).repeat(d_f, 1, 1, 1)
+        g_col = g_1d.view(1, 1, -1, 1).repeat(d_f, 1, 1, 1)
+
+        pad = g_1d.numel() // 2
         aro_inputs_padded = F.pad(aro_inputs, (pad, pad, pad, pad), mode="reflect")
 
-        # Apply depthwise convolution
-        aro_outputs = F.conv2d(aro_inputs_padded, g_kernel, groups=d_f)
+        # Apply separable conv
+        out = F.conv2d(aro_inputs_padded, g_row, groups=d_f)
+        out = F.conv2d(out, g_col, groups=d_f)
 
-        # Rearrange back to (B, T, N_lat, N_lon, d_f)
-        aro_outputs_tensor = aro_outputs.permute(0, 2, 3, 1).view(B, T, N_lat, N_lon, d_f)
-
-        # Wrap into NamedTensor
-        aro_outputs_nt = NamedTensor.new_like(
-            aro_outputs_tensor.type_as(x.tensor), x
-        )
-        return aro_outputs_nt
+        aro_outputs_tensor = out.permute(0, 2, 3, 1).view(B, T, N_lat, N_lon, d_f)
+        return NamedTensor.new_like(aro_outputs_tensor.type_as(x.tensor), x)
 
     def decompose_bands(self, tensor: NamedTensor) -> list[torch.Tensor]:
         """

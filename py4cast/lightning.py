@@ -344,8 +344,8 @@ class AutoRegressiveLightning(LightningModule):
         elif loss_name == "mae":
             self.loss = WeightedLoss("L1Loss", reduction="none")
         elif loss_name == "afcrps":
-            self.loss = WeightedLoss("AFCRPS", reduction="none")
-            # self.loss = MultiScaleLoss("AFCRPS", reduction="none")
+            # self.loss = WeightedLoss("AFCRPS", reduction="none")
+            self.loss = MultiScaleLoss("AFCRPS", reduction="none")
         else:
             raise TypeError(f"Unknown loss function: {loss_name}")
         self.loss.prepare(self, statics.interior_mask, dataset_info)
@@ -794,18 +794,18 @@ class AutoRegressiveLightning(LightningModule):
                 )
             
             else:
-                x = torch.cat(
-                    [
-                        prev_states.select_dim("timestep", idx)
-                        for idx in range(batch.num_input_steps)    # pay attention here, for flow matching multi input steps shouldn't be allowed for constructing x0
-                    ]
-                    + [self.grid_static_features[: batch.batch_size], forcing_tensor],
-                    dim=forcing.dim_index("features"),
-                )
                 # x = torch.cat(
-                #     [self.grid_static_features[: batch.batch_size], forcing_tensor],
+                #     [
+                #         prev_states.select_dim("timestep", idx)
+                #         for idx in range(batch.num_input_steps)    # pay attention here, for flow matching multi input steps shouldn't be allowed for constructing x0
+                #     ]
+                #     + [self.grid_static_features[: batch.batch_size], forcing_tensor],
                 #     dim=forcing.dim_index("features"),
                 # )
+                x = torch.cat(
+                    [self.grid_static_features[: batch.batch_size], forcing_tensor],
+                    dim=forcing.dim_index("features"),
+                )
                 # x = torch.cat(
                 #     [
                 #         self.smooth(prev_states.select_dim("timestep", idx), n=4)
