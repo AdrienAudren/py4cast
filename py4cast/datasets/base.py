@@ -248,7 +248,7 @@ def generate_forcings(
             feature_names=[
                 "toa_radiation",
             ],
-            tensor=solar_forcing,
+            tensor=downsampleN(solar_forcing, N=10),
             names=["timestep", "lat", "lon", "features"],
         )
     ]
@@ -444,6 +444,7 @@ class Sample:
                 arr = (arr - means) / std
 
         return torch.from_numpy(arr)
+    
 
     def load(self, no_standardize: bool = False) -> Item:
         """
@@ -468,6 +469,9 @@ class Sample:
                 timestamps=stamps,
                 standardize=(self.settings.standardize and not no_standardize),
             )
+
+            tensor = downsampleN(tensor, N=10)
+
             tmp_state = NamedTensor(tensor=tensor, **deepcopy(state_kwargs))
 
             if param.kind == "input":
@@ -742,11 +746,11 @@ class DatasetABC(Dataset):
         res += 1  # For solar forcing
         # res += 1 if self.settings.noise_strategy == "forcing" else 0
 
-        # for param in self.params:
-        #     if param.kind == "input":
-        #         res += 1
-        #     # elif param.kind == "input_output":
-        #     #     res += 1
+        for param in self.params:
+            if param.kind == "input":
+                res += 1
+            # elif param.kind == "input_output":
+            #     res += 1
         return res
 
     @cached_property
@@ -962,3 +966,23 @@ class DatasetABC(Dataset):
             dynamical_downscaling,
             shortcut_length
         )
+
+@staticmethod
+def downsampleN(x: torch.Tensor, N: int = 1) -> NamedTensor:
+    # Unpack shape
+    T, N_lat, N_lon, d_f = x.shape
+
+    # Rearrange for interpolation: (T, d_f, N_lat, N_lon)
+    aro_outputs = x.permute(0, 3, 1, 2)
+
+    # Compute low-res dimensions
+    N_lat_low = N_lat // N
+    N_lon_low = N_lon // N
+
+    # Downsample
+    aro_outputs_lowres = torch.nn.functional.interpolate(aro_outputs, size=(N_lat_low, N_lon_low), mode="bilinear", antialias=True)
+
+    # Rearrange back to (T, N_lat, N_lon, d_f)
+    aro_outputs_downsampled_tensor = aro_outputs_lowres.permute(0, 2, 3, 1)
+
+    return aro_outputs_downsampled_tensor

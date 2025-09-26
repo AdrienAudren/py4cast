@@ -281,7 +281,7 @@ class AutoRegressiveLightning(LightningModule):
         self.validation_step_losses = []
 
         # Set model input/output grid features based on dataset tensor shapes
-        num_grid_static_features = statics.grid_statics.dim_size("features")
+        num_grid_static_features = 0 #statics.grid_statics.dim_size("features")
 
         # Compute the number of input features for the neural network
         # Should be directly supplied by datasetinfo ?
@@ -335,6 +335,9 @@ class AutoRegressiveLightning(LightningModule):
             expand_to_batch(statics.grid_statics.tensor, batch_size),
             persistent=False,
         )
+
+        self._kernel_cache = {}  # cache kernels per (n, device, dtype)
+
         # We need to instantiate the loss after statics had been transformed.
         # Indeed, the statics used should be in the right dimensions.
         # MSE loss, need to do reduction ourselves to get proper weighting
@@ -344,8 +347,8 @@ class AutoRegressiveLightning(LightningModule):
         elif loss_name == "mae":
             self.loss = WeightedLoss("L1Loss", reduction="none")
         elif loss_name == "afcrps":
-            # self.loss = WeightedLoss("AFCRPS", reduction="none")
-            self.loss = MultiScaleLoss("AFCRPS", reduction="none")
+            self.loss = WeightedLoss("AFCRPS", reduction="none")
+            # self.loss = MultiScaleLoss("AFCRPS", reduction="none")
         else:
             raise TypeError(f"Unknown loss function: {loss_name}")
         self.loss.prepare(self, statics.interior_mask, dataset_info)
@@ -535,47 +538,101 @@ class AutoRegressiveLightning(LightningModule):
 
         return pred
     
-    def smooth(self, x: torch.Tensor, n: int = 1) -> torch.Tensor:
-        # Unpack shape
-        B, N_lat, N_lon, d_f = x.shape
-        # Rearrange for interpolation: (B, d_f, N_lat, N_lon)
-        aro_inputs = x.view(B, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
+    def _get_gaussian_1d(self, n: int, device, dtype) -> torch.Tensor:
+        """
+        Return cached 1D Gaussian kernel for scale n.
+        """
+        key = (n, device, dtype)
+        if key in self._kernel_cache:
+            return self._kernel_cache[key]
 
-        # Map scale factor n -> equivalent Gaussian sigma
         sigma = n / math.sqrt(3.0)
-
-        # Build Gaussian kernel
         kernel_size = int(6 * sigma + 1)
-        if kernel_size % 2 == 0:  # ensure odd
+        if kernel_size % 2 == 0:
             kernel_size += 1
 
-        coords = torch.arange(kernel_size, device=aro_inputs.device, dtype=aro_inputs.dtype) - kernel_size // 2
+        coords = torch.arange(kernel_size, device=device, dtype=dtype) - kernel_size // 2
         g_1d = torch.exp(-0.5 * (coords / sigma) ** 2)
         g_1d /= g_1d.sum()
 
+        self._kernel_cache[key] = g_1d
+        return g_1d
 
-        # Separable 2D kernel
-        g_2d = torch.outer(g_1d, g_1d)
-        g_2d /= g_2d.sum()
+    def smooth(self, x: torch.Tensor, n: int = 1) -> NamedTensor:
+        B, N_lat, N_lon, d_f = x.shape
+        aro_inputs = x.view(B, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
 
-        # Depthwise conv kernel
-        g_kernel = g_2d.view(1, 1, kernel_size, kernel_size).to(aro_inputs.dtype).to(aro_inputs.device)
-        g_kernel = g_kernel.repeat(d_f, 1, 1, 1)  # one kernel per channel
+        g_1d = self._get_gaussian_1d(n, aro_inputs.device, aro_inputs.dtype)
 
-        # Padding for "same" output size
-        pad = kernel_size // 2
+        # Build separable kernels
+        g_row = g_1d.view(1, 1, 1, -1).repeat(d_f, 1, 1, 1)
+        g_col = g_1d.view(1, 1, -1, 1).repeat(d_f, 1, 1, 1)
+
+        pad = g_1d.numel() // 2
         aro_inputs_padded = F.pad(aro_inputs, (pad, pad, pad, pad), mode="reflect")
 
-        # Apply depthwise convolution
-        aro_outputs = F.conv2d(aro_inputs_padded, g_kernel, groups=d_f)
+        # Apply separable conv
+        out = F.conv2d(aro_inputs_padded, g_row, groups=d_f)
+        out = F.conv2d(out, g_col, groups=d_f)
 
-        # Rearrange back to (B, T, N_lat, N_lon, d_f)
-        aro_outputs_tensor = aro_outputs.permute(0, 2, 3, 1).view(B, N_lat, N_lon, d_f)
-
+        aro_outputs_tensor = out.permute(0, 2, 3, 1).view(B, N_lat, N_lon, d_f)
         return aro_outputs_tensor
 
+    # def _next_x(
+    #     self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int, scale_factor: int = 1
+    # ) -> torch.Tensor:
+    #     """
+    #     Build the next x input for the model at timestep step_idx using the :
+    #     - previous states
+    #     - forcing
+    #     - static features
+    #     """
+
+    #     forcing = batch.forcing.select_dim("timestep", step_idx, bare_tensor=False)
+    #     forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
+
+    #     last_smoothed = self.smooth(prev_states.select_dim("timestep", -1), n=scale_factor)
+
+    #     x = torch.cat(
+    #         [
+    #             self.smooth(prev_states.select_dim("timestep", idx), n=scale_factor)
+    #             for idx in range(batch.num_input_steps-1)   
+    #         ]
+    #         + [last_smoothed,]
+    #         + [self.grid_static_features[: batch.batch_size], forcing_tensor],
+    #         dim=forcing.dim_index("features"),
+    #     )
+                
+    #     return x, last_smoothed
+
+    # def _next_x(
+    #     self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int
+    # ) -> torch.Tensor:
+    #     """
+    #     Build the next x input for the model at timestep step_idx using the :
+    #     - previous states
+    #     - forcing
+    #     - static features
+    #     """
+
+    #     forcing = batch.forcing.select_dim("timestep", step_idx, bare_tensor=False)
+    #     forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
+
+    #     last_smoothed = self.smooth(prev_states.select_dim("timestep", -1), n=10)
+
+    #     x = torch.cat(
+    #         [
+    #             self.smooth(prev_states.select_dim("timestep", idx), n=4)
+    #             for idx in range(batch.num_input_steps)   
+    #         ]
+    #         + [self.grid_static_features[: batch.batch_size], forcing_tensor],
+    #         dim=forcing.dim_index("features"),
+    #     )
+                
+    #     return x, last_smoothed
+
     def _next_x(
-        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int, noise: bool = False, t: int = None, dt: float = None, st: torch.Tensor = None, ft: torch.Tensor = None
+        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int
     ) -> torch.Tensor:
         """
         Build the next x input for the model at timestep step_idx using the :
@@ -583,255 +640,18 @@ class AutoRegressiveLightning(LightningModule):
         - forcing
         - static features
         """
-        num_dynamic_features = batch.inputs.dim_size("features")
-        step_diff_std, step_diff_mean = self._step_diffs(
-                    (batch.outputs.feature_names),
-                    prev_states.device,
-                )
+
         forcing = batch.forcing.select_dim("timestep", step_idx, bare_tensor=False)
         forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
-        forcing_tobedownscaled = forcing_tensor[...,:num_dynamic_features]
-        external_forcings = forcing_tensor[...,num_dynamic_features:]
-        # residual = batch.outputs.select_dim("timestep", 0) - forcing_tobedownscaled
-        # scaled_residual = (residual - step_diff_mean) / step_diff_std
 
-        # # Get shape
-        # B, N_lat, N_lon, d_f = prev_states.select_dim("timestep", 0).shape
-
-        # # Select timestep 0 and keep on GPU
-        # aro_t = prev_states.select_dim("timestep", 0)  # shape: (B, N_lat, N_lon, d_f)
-
-        # # Rearrange to (B, d_f, N_lat, N_lon) for interpolation
-        # aro_t = aro_t.permute(0, 3, 1, 2)  # (B, d_f, H, W)
-
-        # # Compute low-res dimensions
-        # N_lat_low = N_lat // 10
-        # N_lon_low = N_lon // 10
-
-        # # Downsample
-        # aro_t_lowres = torch.nn.functional.interpolate(
-        #     aro_t, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
-        # )
-
-        # # Upsample back to original resolution
-        # aro_t_upsampled = torch.nn.functional.interpolate(
-        #     aro_t_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
-        # )
-
-        # # Rearrange back to (B, N_lat, N_lon, d_f)
-        # aro_t_upsampled_tensor = aro_t_upsampled.permute(0, 2, 3, 1)  # shape: (B, N_lat, N_lon, d_f)
-
-
-        # # Get shape
-        # B, N_lat, N_lon, d_f = forcing_tobedownscaled.shape
-
-        # # Rearrange to (B, d_f, N_lat, N_lon) for interpolation
-        # forcing_tobedownscaled = forcing_tobedownscaled.permute(0, 3, 1, 2)  # (B, d_f, H, W)
-
-        # # Compute low-res dimensions
-        # N_lat_low = N_lat // 10
-        # N_lon_low = N_lon // 10
-
-        # # Downsample
-        # forcing_tobedownscaled_lowres = torch.nn.functional.interpolate(
-        #     forcing_tobedownscaled, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
-        # )
-
-        # # Upsample back to original resolution
-        # forcing_tobedownscaled_upsampled = torch.nn.functional.interpolate(
-        #     forcing_tobedownscaled_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
-        # )
-
-        # # Rearrange back to (B, N_lat, N_lon, d_f)
-        # forcing_tobedownscaled_upsampled_tensor = forcing_tobedownscaled_upsampled.permute(0, 2, 3, 1)  # shape: (B, N_lat, N_lon, d_f)
-
-        if t is not None:
-            t = t.view(t.shape[0], 1, 1, 1)
-        if dt is not None:
-            dt = dt.view(dt.shape[0], 1, 1, 1)
-
-        if t is not None and dt is not None:
-            # Needs to return x(t+dt) for s(t+dt) compute
-            if self.dynamical_downscaling: # and ft is not None:
-                # x = torch.cat(
-                # [
-                #     torch.clip((1- (1 - 1e-5) * t)*ft + t*scaled_residual + st*dt, -4, 4)    # from gaussian to aro_t+1
-                # ]
-                # + [self.grid_static_features[: batch.batch_size]]
-                # + [
-                #     prev_states.select_dim("timestep", idx)   # aro_t as a forcing
-                #     for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
-                # ]
-                # + [forcing_tensor],
-                # dim=forcing.dim_index("features"),
-                # )
-                x = torch.cat(
-                [
-                    torch.clip((1- (1 - 1e-5) * t)*prev_states.select_dim("timestep", 0) + t*batch.outputs.select_dim("timestep", 0) + st*dt, -4, 4)    # from arp_t+1 to aro_t+1
-                ]
-                + [self.grid_static_features[: batch.batch_size]] 
-                +
-                [
-                    prev_states.select_dim("timestep", idx)   # aro_t as a forcing
-                    for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
-                ]
-                + [forcing_tensor],
-                dim=forcing.dim_index("features"),
-                )
-            else:
-                x = torch.cat(
-                [                                                                                                     # from aro_t to aro_t+1
-                    (1- (1 - 1e-5) * t)*prev_states.select_dim("timestep", 0) + t*batch.outputs.select_dim("timestep", 0) + st*dt   # using multi input steps doesn't make sense here 
-                ]                                                                                                     # because we always predict only one step ahead
-                + [self.grid_static_features[: batch.batch_size], forcing_tensor],                                           # x(t) has size of one step too and x0 so	
-                dim=forcing.dim_index("features"),
-                )
-        
-        elif t is not None and dt is None:
-            # Needs to return x(t) for s(t) compute
-
-            if self.dynamical_downscaling: # and ft is not None:
-                # x = torch.cat(
-                # [
-                #     (1- (1 - 1e-5) * t)*ft + t*scaled_residual   # from gaussian ft~N(0,I) to aro_t+1 - arp_t+1
-                # ]
-                # + [self.grid_static_features[: batch.batch_size]] 
-                # + [
-                #     prev_states.select_dim("timestep", idx)   # aro_t as a forcing
-                #     for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
-                # ]
-                # + [forcing_tensor],
-                # dim=forcing.dim_index("features"),
-                # )
-                x = torch.cat(
-                [
-                    (1- (1 - 1e-5) * t)*prev_states.select_dim("timestep", 0) + t*batch.outputs.select_dim("timestep", 0) # from arp_t+1 to aro_t+1
-                ]
-                + [self.grid_static_features[: batch.batch_size]] 
-                +
-                [
-                    prev_states.select_dim("timestep", idx)   # aro_t as a forcing
-                    for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
-                ]
-                + [forcing_tensor],
-                dim=forcing.dim_index("features"),
-                )
-            else:
-                x = torch.cat(
-                [                                                                                              # from aro_t to aro_t+1
-                    (1- (1 - 1e-5) * t)*prev_states.select_dim("timestep", 0) + t*batch.outputs.select_dim("timestep", 0)    # using multi input steps doesn't make sense here 
-                ]                                                                                              # because we always predict only one step ahead
-                + [self.grid_static_features[: batch.batch_size], forcing_tensor],                                    # x(t) has size of one step too and x0 so	
-                dim=forcing.dim_index("features"),
-                )
-        
-        elif t is None and dt is not None:
-            # Needs to return x(t+dt) for "sampling"
-            
-            if self.dynamical_downscaling and ft is not None:
-                # x = torch.cat(
-                # [
-                #     ft + st*dt # from arp_t+1 to aro_t+1
-                # ]
-                # + [self.grid_static_features[: batch.batch_size]] 
-                # + [
-                #     prev_states.select_dim("timestep", idx)   # aro_t as a forcing
-                #     for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
-                # ]
-                # + [forcing_tensor],  
-                # dim=forcing.dim_index("features"),
-                # )
-                x = torch.cat(
-                [
-                    ft + st*dt # from arp_t+1 to aro_t+1
-                ]
-                + [self.grid_static_features[: batch.batch_size]] 
-                +
-                [
-                    prev_states.select_dim("timestep", idx)   # aro_t as a forcing
-                    for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
-                ]
-                + [forcing_tensor],  
-                dim=forcing.dim_index("features"),
-                )
-
-            else:
-                x = torch.cat(
-                [
-                    prev_states.select_dim("timestep", 0) + st*dt                 # from aro_t to aro_t+1
-                ]                                                                 # using multi input steps doesn't make sense here
-                + [self.grid_static_features[: batch.batch_size], forcing_tensor],       # because we always predict only one step ahead
-                dim=forcing.dim_index("features"),                                # x(t) has size of one step too and x0 so
-                )
-
-        else:
-            # Default case, not training, sampling only 
-            if self.dynamical_downscaling:
-                # x = torch.cat(
-                # [
-                #     torch.randn_like(forcing_tobedownscaled)  # starts from gaussian prior 
-                # ]
-                # + [self.grid_static_features[: batch.batch_size]] 
-                # + [
-                #     prev_states.select_dim("timestep", idx)   # aro_t as a forcing
-                #     for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
-                # ]
-                # + [forcing_tensor],  
-                # dim=forcing.dim_index("features"),
-                # )
-                x = torch.cat(
-                [
-                    prev_states.select_dim("timestep", 0)  # starts from prior arp_t+1
-                ]
-                + [self.grid_static_features[: batch.batch_size]] 
-                +
-                [
-                    prev_states.select_dim("timestep", idx)   # aro_t as a forcing
-                    for idx in range(batch.num_input_steps)   # for conditionning, multi input steps is allowed
-                ]
-                + [forcing_tensor],  
-                dim=forcing.dim_index("features"),
-                )
-            
-            else:
-                # x = torch.cat(
-                #     [
-                #         prev_states.select_dim("timestep", idx)
-                #         for idx in range(batch.num_input_steps)    # pay attention here, for flow matching multi input steps shouldn't be allowed for constructing x0
-                #     ]
-                #     + [self.grid_static_features[: batch.batch_size], forcing_tensor],
-                #     dim=forcing.dim_index("features"),
-                # )
-                x = torch.cat(
-                    [self.grid_static_features[: batch.batch_size], forcing_tensor],
-                    dim=forcing.dim_index("features"),
-                )
-                # x = torch.cat(
-                #     [
-                #         self.smooth(prev_states.select_dim("timestep", idx), n=4)
-                #         for idx in range(batch.num_input_steps)    # pay attention here, for flow matching multi input steps shouldn't be allowed for constructing x0
-                #     ]
-                #     + [self.grid_static_features[: batch.batch_size], forcing_tensor],
-                #     dim=forcing.dim_index("features"),
-                # )
-                # x = torch.cat(
-                #     [
-                #         prev_states.select_dim("timestep", idx)
-                #         for idx in range(batch.num_input_steps)    # pay attention here, for flow matching multi input steps shouldn't be allowed for constructing x0
-                #     ]
-                #     + [self.grid_static_features[: batch.batch_size], forcing_tobedownscaled_upsampled_tensor]
-                #     +[external_forcings],
-                #     dim=forcing.dim_index("features"),
-                # )
-                if noise and self.noise_strategy == "forcing":
-                    # concatenate noise channel as a forcing
-                    x = torch.cat(
-                        [
-                            torch.cat([x, torch.randn_like(forcing_tensor[..., 0].unsqueeze(-1))], dim=forcing.dim_index("features")).unsqueeze(1) for _ in range(self.noise_members)
-                        ],
-                        dim=1,
-                    )
-                    x = x.reshape(self.batch_size*self.noise_members, *x.shape[2:])
+        x = torch.cat(
+            [
+                prev_states.select_dim("timestep", idx)
+                for idx in range(batch.num_input_steps)   
+            ]
+            + [forcing_tensor],
+            dim=forcing.dim_index("features"),
+        )
                 
         return x
 
@@ -913,6 +733,29 @@ class AutoRegressiveLightning(LightningModule):
                     return self._common_step_FM_sampling(batch, inference)
             else:
                 return self._common_step_FM_sampling(batch, inference)
+            
+    def f10(self, n: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Logarithmic growth function with k=10,
+        normalized to the range [0, 1).
+
+        Parameters:
+            n (torch.Tensor): Non-negative integer tensor of any shape.
+
+        Returns:
+            torch.Tensor: float32 tensor with values in [0, 1), same shape as n.
+            torch.Tensor: int64 tensor with values in [1, 128), same shape as n.
+        """
+        k = 10.0
+        scale = 7.0 #31.0 #127.0  # original growth factor
+        
+        n = n.to(torch.float32)  # works elementwise across batch
+        vals = 1 + scale * torch.log1p(n / k) / (1 + torch.log1p(n / k))
+
+        ints = vals.to(torch.int64)           # [1, 128)
+        floats = (ints / (scale+1)).to(torch.float32)  # [0, 1)
+
+        return floats, ints
 
     def _common_step(
         self, batch: ItemBatch, inference: bool = False
@@ -949,75 +792,8 @@ class AutoRegressiveLightning(LightningModule):
 
             batch.forcing.flatten_("ngrid", *batch.forcing.spatial_dim_idx)
 
-
-        # # Unpack shape
-        # B, T, N_lat, N_lon, d_f = batch.inputs.tensor.shape
-
-        # # Rearrange for interpolation: (B*T, d_f, N_lat, N_lon)
-        # aro_inputs = batch.inputs.tensor.view(B * T, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
-
-        # # Compute low-res dimensions
-        # N_lat_low = N_lat // 10
-        # N_lon_low = N_lon // 10
-
-        # # Downsample
-        # aro_inputs_lowres = torch.nn.functional.interpolate(
-        #     aro_inputs, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
-        # )
-
-        # # Upsample back
-        # aro_inputs_upsampled = torch.nn.functional.interpolate(
-        #     aro_inputs_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
-        # )
-
-        # # Rearrange back to (B, T, N_lat, N_lon, d_f)
-        # aro_inputs_upsampled_tensor = aro_inputs_upsampled.permute(0, 2, 3, 1).view(B, T, N_lat, N_lon, d_f)
-
-        # # Wrap into NamedTensor
-        # aro_inputs_upsampled_nt = NamedTensor.new_like(
-        #     aro_inputs_upsampled_tensor.type_as(batch.inputs.tensor), batch.inputs
-        # )
-
-
-
-        # prev_states = aro_inputs_upsampled_nt
         prev_states = batch.inputs
         prediction_list = []
-
-
-
-        #########################
-        # # Unpack shape
-        # B, T, N_lat, N_lon, d_f = batch.outputs.tensor.shape
-
-        # # Rearrange for interpolation: (B*T, d_f, N_lat, N_lon)
-        # aro_outputs = batch.outputs.tensor.view(B * T, N_lat, N_lon, d_f).permute(0, 3, 1, 2)
-
-        # # Compute low-res dimensions
-        # N_lat_low = N_lat // 2
-        # N_lon_low = N_lon // 2
-
-        # # Downsample
-        # aro_outputs_lowres = torch.nn.functional.interpolate(
-        #     aro_outputs, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
-        # )
-
-        # # Upsample back
-        # aro_outputs_upsampled = torch.nn.functional.interpolate(
-        #     aro_outputs_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
-        # )
-
-        # # Rearrange back to (B, T, N_lat, N_lon, d_f)
-        # aro_outputs_upsampled_tensor = aro_outputs_upsampled.permute(0, 2, 3, 1).view(B, T, N_lat, N_lon, d_f)
-
-        # # Wrap into NamedTensor
-        # aro_outputs_upsampled_nt = NamedTensor.new_like(
-        #     aro_outputs_upsampled_tensor.type_as(batch.outputs.tensor), batch.outputs
-        # )
-        #########################
-
-
-
 
         # Here we do the autoregressive prediction looping
         # for the desired number of ar steps.
@@ -1034,19 +810,21 @@ class AutoRegressiveLightning(LightningModule):
                     ),
                     prev_states.device,
                 )
+            
+            # t = torch.tensor(i) #torch.randint(low=0, high=50, size=(1,), device=prev_states.device) # random t FOR TRAINING ONLY !
+            # scale_factor_cond, scale_factor = self.f10(t)
+            # scale_factor_cond = torch.ones(self.batch_size*self.noise_members, device=prev_states.device) * scale_factor_cond
 
             # Intermediary steps for which we have no y_true data
             # Should be greater or equal to 1 (otherwise nothing is done).
             for k in range(num_inter_steps):
-                x = self._next_x(batch, prev_states, i)
+                # x, last_smoothed = self._next_x(batch, prev_states, i, scale_factor=scale_factor) # aro_t smoothed according to scale factor
+                # x, last_smoothed = self._next_x(batch, prev_states, i) # aro_t smoothed according to scale factor
+                x = self._next_x(batch, prev_states, i) 
                 if self.noise_strategy == "CondLayerNorm":
                     # generate (32,) noise vectors for stochastic conditional layer normalization
                     # Skillful joint probabilistic weather forecasting from marginals: https://arxiv.org/pdf/2506.10772
                     epsilon = torch.randn(self.batch_size*self.noise_members, 32, device=prev_states.device)
-
-                elif self.noise_strategy == "forcing":
-                    # Add noise channel as forcing with noise=True
-                    x = self._next_x(batch, prev_states, i, noise=True)
 
                 # Graph (B, N_grid, d_f) or Conv (B, N_lat,N_lon d_f)
                 if self.channels_last:
@@ -1057,6 +835,7 @@ class AutoRegressiveLightning(LightningModule):
                     x = features_last_to_second(x)
                     if self.noise_strategy == "CondLayerNorm":
                         x = x.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *x.shape[1:])
+                        # y = self.model(x, cond_z=epsilon, t=scale_factor_cond)
                         y = self.model(x, cond_z=epsilon)
                     else:   
                         y = self.model(x)
@@ -1064,6 +843,7 @@ class AutoRegressiveLightning(LightningModule):
                 else:
                     if self.noise_strategy == "CondLayerNorm":
                         x = x.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *x.shape[1:])
+                        # y = self.model(x, cond_z=epsilon, t=scale_factor_cond)
                         y = self.model(x, cond_z=epsilon)
                     else:
                         y = self.model(x)
@@ -1071,54 +851,10 @@ class AutoRegressiveLightning(LightningModule):
                 # We update the latest of our prev_states with the network output
                 if scale_y:
 
-                    # # Get shape
-                    # B, N_lat, N_lon, d_f = prev_states.select_dim("timestep", -1).shape
-
-                    # # Select timestep 0 and keep on GPU
-                    # aro_t = prev_states.select_dim("timestep", -1)  # shape: (B, N_lat, N_lon, d_f)
-
-                    # # Rearrange to (B, d_f, N_lat, N_lon) for interpolation
-                    # aro_t = aro_t.permute(0, 3, 1, 2)  # (B, d_f, H, W)
-
-                    # # Compute low-res dimensions
-                    # N_lat_low = N_lat // 10
-                    # N_lon_low = N_lon // 10
-
-                    # # Downsample
-                    # aro_t_lowres = torch.nn.functional.interpolate(
-                    #     aro_t, size=(N_lat_low, N_lon_low), mode='bilinear', align_corners=False
-                    # )
-
-                    # # Upsample back to original resolution
-                    # aro_t_upsampled = torch.nn.functional.interpolate(
-                    #     aro_t_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
-                    # )
-
-                    # # Rearrange back to (B, N_lat, N_lon, d_f)
-                    # aro_t_upsampled_tensor = aro_t_upsampled.permute(0, 2, 3, 1)  # shape: (B, N_lat, N_lon, d_f)
-                    
-                    # predicted_state = (
-                    #     3 * prev_states.select_dim("timestep", -1)
-                    #     - 3 * prev_states.select_dim("timestep", -2)
-                    #     + prev_states.select_dim("timestep", -3)
-                    #     + y * step_diff_std
-                    #     + step_diff_mean
-                    # )
-                    # predicted_state = (
-                    #     # select the last timestep
-                    #     2*prev_states.select_dim("timestep", -1)
-                    #     - prev_states.select_dim("timestep", -2)
-                    #     + y * step_diff_std
-                    #     + step_diff_mean
-                    # )
-                    # predicted_state = (1/3)*(
-                    #     # select the last timestep
-                    #     4*prev_states.select_dim("timestep", -1)
-                    #     - prev_states.select_dim("timestep", -2)
-                    #     + y * step_diff_std
-                    #     + step_diff_mean
-                    # )
                     # last_prev_state = prev_states.select_dim("timestep", -1)
+                    # if self.noise_strategy in ["CondLayerNorm", "forcing"]:
+                    #     last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
+                    # last_prev_state = last_smoothed
                     # if self.noise_strategy in ["CondLayerNorm", "forcing"]:
                     #     last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
 
@@ -1129,12 +865,7 @@ class AutoRegressiveLightning(LightningModule):
                     #     + y * step_diff_std
                     #     + step_diff_mean
                     # )
-                    # predicted_state = (
-                    #     # select the last timestep
-                    #     prev_states.select_dim("timestep", -2)
-                    #     + y * step_diff_std
-                    #     + step_diff_mean
-                    # )
+
                     predicted_state = y
                 else:
                     predicted_state = prev_states.select_dim("timestep", -1) + y

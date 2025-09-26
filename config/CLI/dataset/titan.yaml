@@ -1,10 +1,10 @@
 data:
   #args forwarded (linked) to model
   dataset_name: titan_refacto2
-  num_input_steps: 1
+  num_input_steps: 2
   num_pred_steps_train: 1
   num_pred_steps_val_test: 1
-  batch_size: 2 # per device    
+  batch_size: 4 # per device    
   noise_members: 2 # total number of members
   noise_strategy: "CondLayerNorm" # 
   # shortcut_length: 1 # Flow matching: {1, 2, ..., 128}, DDIM: {1 = from prior, 10 = generative}
@@ -12,7 +12,7 @@ data:
   #other args
   ensemble_metrics: False
   features_to_plot: ["full"] # ["aro_t2m_2m", "aro_tp_0m", "aro_r2_2m", "aro_v10_10m", "aro_t_850hpa", "aro_z_500hpa"]  #  for test step only ["aro_t_850hpa", "aro_u_850hpa", "aro_v_850hpa", "aro_z_850hpa"]
-  num_workers: 2
+  num_workers: 8
   prefetch_factor: null
   pin_memory: null 
   #dataset_conf: config/datasets/titan_full.json
