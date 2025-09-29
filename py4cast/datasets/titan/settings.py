@@ -11,3 +11,4 @@ with open(Path(__file__).parents[0] / "metadata.yaml", "r") as file:
     METADATA = yaml.safe_load(file)
 
 DEFAULT_CONFIG = Path(__file__).parents[3] / "config/datasets/titan_full.json"
+# print("Using Titan dataset config:", DEFAULT_CONFIG)

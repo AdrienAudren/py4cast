@@ -281,7 +281,7 @@ class AutoRegressiveLightning(LightningModule):
         self.validation_step_losses = []
 
         # Set model input/output grid features based on dataset tensor shapes
-        num_grid_static_features = 0 #statics.grid_statics.dim_size("features")
+        num_grid_static_features = statics.grid_statics.dim_size("features")
 
         # Compute the number of input features for the neural network
         # Should be directly supplied by datasetinfo ?
@@ -342,8 +342,8 @@ class AutoRegressiveLightning(LightningModule):
         # Indeed, the statics used should be in the right dimensions.
         # MSE loss, need to do reduction ourselves to get proper weighting
         if loss_name == "mse":
-            self.loss = WeightedLoss("MSELoss", reduction="none")
-            # self.loss = MultiScaleLoss("MSELoss", reduction="none")
+            # self.loss = WeightedLoss("MSELoss", reduction="none")
+            self.loss = MultiScaleLoss("MSELoss", reduction="none")
         elif loss_name == "mae":
             self.loss = WeightedLoss("L1Loss", reduction="none")
         elif loss_name == "afcrps":
@@ -645,11 +645,7 @@ class AutoRegressiveLightning(LightningModule):
         forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
 
         x = torch.cat(
-            [
-                prev_states.select_dim("timestep", idx)
-                for idx in range(batch.num_input_steps)   
-            ]
-            + [forcing_tensor],
+            [self.grid_static_features[: batch.batch_size], forcing_tensor],
             dim=forcing.dim_index("features"),
         )
                 
@@ -747,7 +743,7 @@ class AutoRegressiveLightning(LightningModule):
             torch.Tensor: int64 tensor with values in [1, 128), same shape as n.
         """
         k = 10.0
-        scale = 7.0 #31.0 #127.0  # original growth factor
+        scale = 31.0 #127.0  # original growth factor
         
         n = n.to(torch.float32)  # works elementwise across batch
         vals = 1 + scale * torch.log1p(n / k) / (1 + torch.log1p(n / k))
@@ -811,7 +807,7 @@ class AutoRegressiveLightning(LightningModule):
                     prev_states.device,
                 )
             
-            # t = torch.tensor(i) #torch.randint(low=0, high=50, size=(1,), device=prev_states.device) # random t FOR TRAINING ONLY !
+            # t = torch.tensor(2) #torch.randint(low=0, high=50, size=(1,), device=prev_states.device) # random t FOR TRAINING ONLY ! 
             # scale_factor_cond, scale_factor = self.f10(t)
             # scale_factor_cond = torch.ones(self.batch_size*self.noise_members, device=prev_states.device) * scale_factor_cond
 
@@ -835,7 +831,6 @@ class AutoRegressiveLightning(LightningModule):
                     x = features_last_to_second(x)
                     if self.noise_strategy == "CondLayerNorm":
                         x = x.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *x.shape[1:])
-                        # y = self.model(x, cond_z=epsilon, t=scale_factor_cond)
                         y = self.model(x, cond_z=epsilon)
                     else:   
                         y = self.model(x)
@@ -843,7 +838,6 @@ class AutoRegressiveLightning(LightningModule):
                 else:
                     if self.noise_strategy == "CondLayerNorm":
                         x = x.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *x.shape[1:])
-                        # y = self.model(x, cond_z=epsilon, t=scale_factor_cond)
                         y = self.model(x, cond_z=epsilon)
                     else:
                         y = self.model(x)

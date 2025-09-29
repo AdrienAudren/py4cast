@@ -16,6 +16,8 @@ import gif
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as F
+import math
 from mfai.torch.namedtensor import NamedTensor
 from tabulate import tabulate
 from torch.utils.data import DataLoader, Dataset
@@ -248,7 +250,7 @@ def generate_forcings(
             feature_names=[
                 "toa_radiation",
             ],
-            tensor=downsampleN(solar_forcing, N=10),
+            tensor=solar_forcing,
             names=["timestep", "lat", "lon", "features"],
         )
     ]
@@ -470,7 +472,9 @@ class Sample:
                 standardize=(self.settings.standardize and not no_standardize),
             )
 
-            tensor = downsampleN(tensor, N=10)
+            # #######################
+            # tensor = smooth(tensor)
+            # #######################
 
             tmp_state = NamedTensor(tensor=tensor, **deepcopy(state_kwargs))
 
@@ -746,11 +750,11 @@ class DatasetABC(Dataset):
         res += 1  # For solar forcing
         # res += 1 if self.settings.noise_strategy == "forcing" else 0
 
-        for param in self.params:
-            if param.kind == "input":
-                res += 1
-            # elif param.kind == "input_output":
-            #     res += 1
+        # for param in self.params:
+        #     if param.kind == "input":
+        #         res += 1
+        #     # elif param.kind == "input_output":
+        #     #     res += 1
         return res
 
     @cached_property
@@ -967,22 +971,80 @@ class DatasetABC(Dataset):
             shortcut_length
         )
 
-@staticmethod
-def downsampleN(x: torch.Tensor, N: int = 1) -> NamedTensor:
-    # Unpack shape
-    T, N_lat, N_lon, d_f = x.shape
+# @staticmethod
+# def downsampleN(x: torch.Tensor, N: int = 1) -> NamedTensor:
+#     # Unpack shape
+#     T, N_lat, N_lon, d_f = x.shape
 
-    # Rearrange for interpolation: (T, d_f, N_lat, N_lon)
-    aro_outputs = x.permute(0, 3, 1, 2)
+#     # Rearrange for interpolation: (T, d_f, N_lat, N_lon)
+#     aro_outputs = x.permute(0, 3, 1, 2)
 
-    # Compute low-res dimensions
-    N_lat_low = N_lat // N
-    N_lon_low = N_lon // N
+#     # Compute low-res dimensions
+#     N_lat_low = N_lat // N
+#     N_lon_low = N_lon // N
 
-    # Downsample
-    aro_outputs_lowres = torch.nn.functional.interpolate(aro_outputs, size=(N_lat_low, N_lon_low), mode="bilinear", antialias=True)
+#     # Downsample
+#     aro_outputs_lowres = torch.nn.functional.interpolate(aro_outputs, size=(N_lat_low, N_lon_low), mode="bilinear", antialias=True)
 
-    # Rearrange back to (T, N_lat, N_lon, d_f)
-    aro_outputs_downsampled_tensor = aro_outputs_lowres.permute(0, 2, 3, 1)
+#     # Upsample back
+#     aro_outputs_upsampled = torch.nn.functional.interpolate(
+#         aro_outputs_lowres, size=(N_lat, N_lon), mode='bilinear', align_corners=False
+#     )
 
-    return aro_outputs_downsampled_tensor
+#     # Rearrange back to (T, N_lat, N_lon, d_f)
+#     aro_outputs_upsampled_tensor = aro_outputs_upsampled.permute(0, 2, 3, 1)
+
+#     return aro_outputs_upsampled_tensor
+
+
+
+
+# # Precompute Gaussian kernel(s) at module load
+# _KERNEL_CACHE: Dict[tuple, torch.Tensor] = {}
+
+
+# def _precompute_gaussian_1d(n: int = 10, device="cpu", dtype=torch.float32) -> torch.Tensor:
+#     sigma = n / math.sqrt(3.0)
+#     kernel_size = int(6 * sigma + 1)
+#     if kernel_size % 2 == 0:
+#         kernel_size += 1
+
+#     coords = torch.arange(kernel_size, device=device, dtype=dtype) - kernel_size // 2
+#     g_1d = torch.exp(-0.5 * (coords / sigma) ** 2)
+#     g_1d /= g_1d.sum()
+#     return g_1d
+
+# # Precompute default kernel (n=10, cpu, float32)
+# _KERNEL_CACHE[(10, "cpu", torch.float32)] = _precompute_gaussian_1d(10)
+
+
+# @staticmethod
+# def _get_gaussian_1d(n: int, device, dtype) -> torch.Tensor:
+#     """
+#     Return cached 1D Gaussian kernel for scale n.
+#     """
+#     key = (n, device, dtype)
+#     if key not in _KERNEL_CACHE:
+#         # lazily compute if a new device/dtype is requested
+#         _KERNEL_CACHE[key] = _precompute_gaussian_1d(n, device=device, dtype=dtype)
+#     return _KERNEL_CACHE[key]
+
+# @staticmethod
+# def smooth(x: torch.Tensor, n: int = 10) -> torch.Tensor:
+#     B, N_lat, N_lon, d_f = x.shape
+#     aro_inputs = x.permute(0, 3, 1, 2)  # (B, d_f, N_lat, N_lon)
+
+#     g_1d = _get_gaussian_1d(n, aro_inputs.device, aro_inputs.dtype)
+
+#     # Build separable kernels
+#     g_row = g_1d.view(1, 1, 1, -1).repeat(d_f, 1, 1, 1)
+#     g_col = g_1d.view(1, 1, -1, 1).repeat(d_f, 1, 1, 1)
+
+#     pad = g_1d.numel() // 2
+#     aro_inputs_padded = F.pad(aro_inputs, (pad, pad, pad, pad), mode="reflect")
+
+#     # Apply separable conv
+#     out = F.conv2d(aro_inputs_padded, g_row, groups=d_f)
+#     out = F.conv2d(out, g_col, groups=d_f)
+
+#     return out.permute(0, 2, 3, 1).contiguous()
