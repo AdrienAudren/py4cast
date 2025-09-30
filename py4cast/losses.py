@@ -277,6 +277,7 @@ class MultiScaleLoss(Py4CastLoss):
             lm, interior_mask, loss_state_weight, squeeze_mask=True
         )
         self.lm = lm
+        self.feature_weights = dataset_info.state_weights
 
     # def smooth(self, x: torch.Tensor, scale: int = 1) -> NamedTensor:
     #     # Unpack shape
@@ -432,9 +433,10 @@ class MultiScaleLoss(Py4CastLoss):
 
         # Compute per-scale loss
         if self.loss.__class__ == AlmostFairCRPS:
-            torch_loss = self.loss(pred_stack, tgt_stack, noise_members=self.lm.noise_members)
+            spectral_loss = self.loss(pred_stack, tgt_stack, noise_members=self.lm.noise_members)
+            pointwise_loss = self.loss(prediction.tensor, target.tensor, noise_members=self.lm.noise_members)
         else:
-            torch_loss = self.loss(pred_stack, tgt_stack)
+            spectral_loss = self.loss(pred_stack, tgt_stack)
         # shape: (B, pred_steps, N_lat, N_lon, n_scale, d_f)
 
         # Retrieve weights: shape (n_scale, d_f)
@@ -444,10 +446,16 @@ class MultiScaleLoss(Py4CastLoss):
         weights = torch.stack(weights, dim=-1).to(prediction.device)  # (n_scale, d_f)
 
         # Apply weights
-        weighted_loss = torch_loss * weights  # broadcast
+        weighted_loss = spectral_loss * weights  # broadcast
 
         # Reduce over feature + scale dims
         weighted_loss = weighted_loss.sum(dim=-1).sum(dim=-1)  # (B, pred_steps, N_lat, N_lon)
+
+        # Add pointwise loss (averaged over features)
+        if self.loss.__class__ == AlmostFairCRPS:
+            pointwise_loss = pointwise_loss * torch.tensor([self.feature_weights[name] for name in prediction.feature_names], device=prediction.device)  # (B, pred_steps, N_lat, N_lon, d_f)
+            pointwise_loss = pointwise_loss.sum(dim=-1)  # (B, pred_steps, N_lat, N_lon)
+            weighted_loss = weighted_loss + pointwise_loss
 
         if not reduce_spatial_dim:
             return weighted_loss
