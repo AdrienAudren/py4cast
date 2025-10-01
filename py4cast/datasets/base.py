@@ -750,11 +750,11 @@ class DatasetABC(Dataset):
         res += 1  # For solar forcing
         # res += 1 if self.settings.noise_strategy == "forcing" else 0
 
-        for param in self.params:
-            if param.kind == "input":
-                res += 1
-            # elif param.kind == "input_output":
-            #     res += 1
+        # for param in self.params:
+        #     if param.kind == "input":
+        #         res += 1
+        #     # elif param.kind == "input_output":
+        #     #     res += 1
         return res
 
     @cached_property

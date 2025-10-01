@@ -19,7 +19,7 @@ ckpt_path: #"/path2ckpt/last.ckpt" #EMPTY: runs as usual. NOT EMPTY: load weight
 trainer:               # Native training arguments of ligthining.pytorch.Trainer
 
   fast_dev_run: False  # True: fit with only 1 batch and 1 epoch, use for dev (logging & checkpointing disabled)
-  num_nodes: 2         # Num of GPU nodes (1 if device=cpu)
+  num_nodes: 1         # Num of GPU nodes (1 if device=cpu)
   max_epochs: 150
   profiler: null       # Performance profiler. Possibilities are [null, simple, or specific custom class (see doc)]
 
@@ -30,7 +30,7 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
         # default_hp_metric: False # see if tensoboard still works before rm TODO
         save_dir:  "/py4cast_root_dir/titan_21var"                     #titan_30varARP/ #       "/py4cast_root_dir/titan_6var/" "/py4cast_root_dir/test_metrics" # Root directory
         name:                            # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
-        version:   afcrps2loss_1order_2em4_CLN_2M_2BS # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
+        version:   afcrps2loss_ARPdownScale_0order_1em4_CLN_2M_4BS # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
     # Your logs will be saved in save_dir/*name*/version/
     # (checkpoints, config.yaml, images, scores, tensorboard logs, ...)
     # Lightning automatically increments the version index of your experiment
