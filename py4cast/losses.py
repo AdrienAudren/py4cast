@@ -14,6 +14,44 @@ from torch.nn import MSELoss
 
 from py4cast.datasets.base import DatasetInfo, NamedTensor
 
+class ClassicCRPS(torch.nn.Module):
+    """
+    Classic CRPS for ensemble forecasts
+    Reference: https://arxiv.org/abs/2412.15832
+    """
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, preds, targets, noise_members=4):
+        """
+        preds: tensor of shape (B*M, ...) or (B, M, ...)
+        targets: tensor of shape (B, ...)
+        noise_members: number of ensemble members
+        """
+        B = targets.shape[0]  # batch size
+        M = noise_members     # ensemble members
+
+        # Reshape predictions into (B, M, ...)
+        preds = preds.reshape(B, M, *preds.shape[1:])
+
+        # Expand targets to (B, M, ...)
+        targets = targets.unsqueeze(1).expand(-1, M, *targets.shape[1:])
+
+        # First term: average absolute error |x_j - y|
+        term1 = torch.mean(torch.abs(preds - targets), dim=1)  # (B, ...)
+
+        # Second term: pairwise differences |x_j - x_k|
+        preds_j = preds.unsqueeze(2)  # (B, M, 1, ...)
+        preds_k = preds.unsqueeze(1)  # (B, 1, M, ...)
+        pairwise_diff = torch.abs(preds_j - preds_k)
+
+        term2 = torch.mean(pairwise_diff, dim=(1, 2)) / 2  # (B, ...)
+
+        # CRPS = mean_j |x_j - y| - 0.5 * mean_{j,k} |x_j - x_k|
+        crps = term1 - term2
+
+        return crps
+
 class AlmostFairCRPS(torch.nn.Module): # Batched Almost Fair CRPS
     """
     AIFS-CRPS: Ensemble forecasting using a model trained with a loss function based on the Continuous Ranked Probability Score
@@ -70,6 +108,8 @@ class Py4CastLoss(ABC):
             self.loss = getattr(torch.nn, loss)(*args, **kwargs)
         elif loss == "AFCRPS":
             self.loss = AlmostFairCRPS()
+        elif loss == "ClassicCRPS":
+            self.loss = ClassicCRPS()
         else:
             raise ValueError("Unrecognized loss function")
 
@@ -163,7 +203,7 @@ class WeightedLoss(Py4CastLoss):
         """
 
         # Compute Torch loss (defined in the parent class when this Mixin is used)
-        if self.loss.__class__ == AlmostFairCRPS:
+        if self.loss.__class__ == AlmostFairCRPS or self.loss.__class__ == ClassicCRPS:
             torch_loss = self.loss(prediction.tensor, target.tensor, noise_members=self.lm.noise_members)
         else:
             torch_loss = self.loss(prediction.tensor, target.tensor)
@@ -423,39 +463,51 @@ class MultiScaleLoss(Py4CastLoss):
         returns (B, pred_steps)
         """
 
-        # Decompose into bands
-        pred_bands = self.decompose_bands(prediction)
-        tgt_bands = self.decompose_bands(target)
+        # # Decompose into bands
+        # pred_bands = self.decompose_bands(prediction)
+        # tgt_bands = self.decompose_bands(target)
 
-        # Stack along n_scale: (B, pred_steps, N_lat, N_lon, n_scale, d_f)
-        pred_stack = torch.stack([pb.tensor for pb in pred_bands], dim=-2)
-        tgt_stack = torch.stack([tb.tensor for tb in tgt_bands], dim=-2)
+        # # Stack along n_scale: (B, pred_steps, N_lat, N_lon, n_scale, d_f)
+        # pred_stack = torch.stack([pb.tensor for pb in pred_bands], dim=-2)
+        # tgt_stack = torch.stack([tb.tensor for tb in tgt_bands], dim=-2)
 
-        # Compute per-scale loss
-        if self.loss.__class__ == AlmostFairCRPS:
-            spectral_loss = self.loss(pred_stack, tgt_stack, noise_members=self.lm.noise_members)
-            pointwise_loss = self.loss(prediction.tensor, target.tensor, noise_members=self.lm.noise_members)
-        else:
-            spectral_loss = self.loss(pred_stack, tgt_stack)
-        # shape: (B, pred_steps, N_lat, N_lon, n_scale, d_f)
+        # # Compute per-scale loss
+        # if self.loss.__class__ == AlmostFairCRPS or self.loss.__class__ == ClassicCRPS:
+        #     torch_MSE = getattr(torch.nn, "MSELoss")()
+        #     spectral_crps = self.loss(pred_stack, tgt_stack, noise_members=self.lm.noise_members)
+        #     B = tgt_stack.shape[0] # effective batch size 
+        #     M = self.lm.noise_members  # Number of ensemble members
+        #     pred_stack = pred_stack.reshape(B, M, *pred_stack.shape[1:])        # (B, M, T, W, H, d_f)
+        #     spectral_mse = torch_MSE(pred_stack.mean(dim=1), tgt_stack)
+        #     # pointwise_loss = self.loss(prediction.tensor, target.tensor, noise_members=self.lm.noise_members)
+        # else:
+        #     spectral_loss = self.loss(pred_stack, tgt_stack)
+        # # shape: (B, pred_steps, N_lat, N_lon, n_scale, d_f)
 
-        # Retrieve weights: shape (n_scale, d_f)
-        weights = []
-        for i, name in enumerate(prediction.feature_names):
-            weights.append(self.loss_state_weight[name])  # (n_scale,)
-        weights = torch.stack(weights, dim=-1).to(prediction.device)  # (n_scale, d_f)
+        # # Retrieve weights: shape (n_scale, d_f)
+        # weights = []
+        # for i, name in enumerate(prediction.feature_names):
+        #     weights.append(self.loss_state_weight[name])  # (n_scale,)
+        # weights = torch.stack(weights, dim=-1).to(prediction.device)  # (n_scale, d_f)
 
-        # Apply weights
-        weighted_loss = spectral_loss * weights  # broadcast
+        # # Apply weights
+        # weighted_loss = (spectral_mse + spectral_crps) * weights  # broadcast
+        # # weighted_loss = spectral_loss
 
-        # Reduce over feature + scale dims
-        weighted_loss = weighted_loss.sum(dim=-1).sum(dim=-1)  # (B, pred_steps, N_lat, N_lon)
+        # # Reduce over feature + scale dims
+        # weighted_loss = weighted_loss.sum(dim=-1).sum(dim=-1)  # (B, pred_steps, N_lat, N_lon)
 
         # Add pointwise loss (averaged over features)
-        if self.loss.__class__ == AlmostFairCRPS:
-            pointwise_loss = pointwise_loss * torch.tensor([self.feature_weights[name] for name in prediction.feature_names], device=prediction.device)  # (B, pred_steps, N_lat, N_lon, d_f)
+        if self.loss.__class__ == AlmostFairCRPS or self.loss.__class__ == ClassicCRPS:
+            pointwise_crps = self.loss(prediction.tensor, target.tensor, noise_members=self.lm.noise_members)
+            torch_MSE = getattr(torch.nn, "MSELoss")()
+            B = target.tensor.shape[0] # effective batch size 
+            M = self.lm.noise_members  # Number of ensemble members
+            pred = prediction.tensor.reshape(B, M, *prediction.tensor.shape[1:])        # (B, M, T, W, H, d_f)
+            bias = torch_MSE(pred.mean(dim=1), target.tensor)
+            pointwise_loss = (pointwise_crps + bias) * torch.tensor([self.feature_weights[name] for name in prediction.feature_names], device=prediction.device)  # (B, pred_steps, N_lat, N_lon, d_f)
             pointwise_loss = pointwise_loss.sum(dim=-1)  # (B, pred_steps, N_lat, N_lon)
-            weighted_loss = weighted_loss + pointwise_loss
+            weighted_loss = pointwise_loss # weighted_loss + ( pointwise_loss * 0.1 )
 
         if not reduce_spatial_dim:
             return weighted_loss

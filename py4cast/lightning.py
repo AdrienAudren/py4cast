@@ -202,7 +202,7 @@ class AutoRegressiveLightning(LightningModule):
         # non-linked args
         model_name: Literal[tuple(model_registry.keys())] = "HalfUNet",
         model_conf: Path | None = None,
-        loss_name: Literal["mse", "mae", "afcrps"] = "mse",
+        loss_name: Literal["mse", "mae", "afcrps", "ClassicCRPS"] = "mse",
         num_inter_steps: int = 1,
         num_samples_to_plot: int = 1,
         training_strategy: Literal["diff_ar", "scaled_ar"] = "diff_ar",
@@ -342,13 +342,16 @@ class AutoRegressiveLightning(LightningModule):
         # Indeed, the statics used should be in the right dimensions.
         # MSE loss, need to do reduction ourselves to get proper weighting
         if loss_name == "mse":
-            # self.loss = WeightedLoss("MSELoss", reduction="none")
-            self.loss = MultiScaleLoss("MSELoss", reduction="none")
+            self.loss = WeightedLoss("MSELoss", reduction="none")
+            # self.loss = MultiScaleLoss("MSELoss", reduction="none")
         elif loss_name == "mae":
             self.loss = WeightedLoss("L1Loss", reduction="none")
         elif loss_name == "afcrps":
             # self.loss = WeightedLoss("AFCRPS", reduction="none")
             self.loss = MultiScaleLoss("AFCRPS", reduction="none")
+        elif loss_name == "ClassicCRPS":
+            self.loss = MultiScaleLoss("ClassicCRPS", reduction="none")
+            # self.loss = WeightedLoss("AFCRPS", reduction="none")
         else:
             raise TypeError(f"Unknown loss function: {loss_name}")
         self.loss.prepare(self, statics.interior_mask, dataset_info)
@@ -1482,14 +1485,14 @@ class AutoRegressiveLightning(LightningModule):
 
         if self.noise_members > 1:
             # select random member for preds
-            # prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
-            # member = prediction_tensor[:, torch.randint(0, self.noise_members, (1,)).item()]
-            # prediction = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
+            prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
+            member = prediction_tensor[:, torch.randint(0, self.noise_members, (1,)).item()]
+            prediction = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
 
             # select mean of members 
-            prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
-            member = torch.mean(prediction_tensor, dim=1)
-            prediction = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
+            # prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
+            # member = torch.mean(prediction_tensor, dim=1)
+            # prediction = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
 
         if self.logging_enabled:
             # Notify every plotters

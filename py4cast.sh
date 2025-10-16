@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH -p milan7513_A100
 #SBATCH --gres gpu:A100:2
-#SBATCH -N 2
+#SBATCH -N 1
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=3
 ##SBATCH --begin=21:00:00
 ##SBATCH --time=120:00:00
 #SBATCH --job-name=crps
 #SBATCH --exclusive
-##SBATCH -w pise34
+#SBATCH -w pise35
 
 # export WORKDIR="/home_nfs/audrena/py4cast"
 export WORKDIR=$(pwd)
@@ -20,7 +20,7 @@ export PY4CAST_ROOTDIR="/scratch/audrena/py4cast_expe"
 export PY4CAST_TITAN_PATH="/data/TITAN" #/fs1/arome/TITAN"
 export http_proxy="http://10.197.209.6:3128"
 export https_proxy="http://10.197.209.6:3128"
-
+export CKPT_DIR="/scratch/audrena/py4cast_expe/titan_21var"
 export NCCL_DEBUG=INFO
 
 

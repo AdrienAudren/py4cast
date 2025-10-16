@@ -5,7 +5,7 @@ Exemple usage:
     runai python bin/main.py fit --config bin/config_test_cli.yaml
 """
 
-from lightning.pytorch.cli import LightningCLI
+from lightning.pytorch.cli import LightningCLI, LightningArgumentParser
 
 from py4cast.lightning import AutoRegressiveLightning, PlDataModule
 
@@ -24,6 +24,8 @@ class Py4castLightningCLI(LightningCLI):
         super().__init__(
             model_class,
             datamodule_class,
+            save_config_kwargs={"overwrite": True},
+            parser_kwargs={"parser_mode": "omegaconf"}
         )
 
     def add_arguments_to_parser(self, parser):
