@@ -21,6 +21,7 @@ export PY4CAST_TITAN_PATH="/data/TITAN" #/fs1/arome/TITAN"
 export http_proxy="http://10.197.209.6:3128"
 export https_proxy="http://10.197.209.6:3128"
 export CKPT_DIR="/scratch/audrena/py4cast_expe/titan_21var"
+export PATH2CKPT="${CKPT_DIR}/mse_ARPdownscale_5em4_multiscale/checkpoints/last.ckpt"
 export NCCL_DEBUG=INFO
 
 
@@ -43,7 +44,7 @@ time srun --mpi=pmix \
         ${SINGULARITY_IMAGE} \
         bash -c " \
             pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -e . --no-cache-dir && \
-            python bin/main.py fit \
+            python bin/main.py test \
                 -c config/CLI/trainer.yaml \
                 -c config/CLI/dataset/titan.yaml \
                 -c config/CLI/model/unetrpp.yaml \

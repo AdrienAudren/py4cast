@@ -1,7 +1,7 @@
 model:
   model_name: UNETRPP
   model_conf: null # Path to model_conf
-  loss_name:  ClassicCRPS #  or mae    mse afcrps 
+  loss_name:  mse #  or mae ClassicCRPS    afcrps 
   num_inter_steps: 1 # Number of intermediary steps (without any data)
   num_samples_to_plot: 1
   training_strategy: scaled_ar #  diff_ar
@@ -29,6 +29,6 @@ model:
     add_skip_connections: true
     attention_code: "torch"
     stochastic: False
-    CondLayerNorm: True # use ConditionalLayerNorm instead of LayerNorm
+    CondLayerNorm: False # use ConditionalLayerNorm instead of LayerNorm
     # time_emb_dim: 128
     # shortcut_length: true # activate flow matching step size embedding
