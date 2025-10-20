@@ -235,6 +235,72 @@ def plot_prediction(
 
     return fig
 
+@matplotlib.rc_context(fractional_plot_bundle(1))
+def plot_1prediction(
+    data,
+    interior_mask,
+    domain_info=None,
+    title=None,
+    vrange=None,
+    cmap="seismic",
+):
+    """
+    Plot a single prediction or ground truth field.
+
+    Args:
+        data (torch.Tensor): 2D field with shape (H, W).
+        interior_mask (torch.Tensor): 2D mask with same shape as data, used for alpha blending.
+        domain_info (object, optional): Object with attributes:
+            - projection: matplotlib/cartopy projection (optional)
+            - grid_limits: tuple (xmin, xmax, ymin, ymax)
+        title (str, optional): Figure title.
+        vrange (tuple, optional): (vmin, vmax) for color scaling.
+        cmap (str, optional): Colormap for imshow.
+
+    Returns:
+        matplotlib.figure.Figure: The created figure.
+    """
+
+    # Convert tensors to numpy
+    data_np = data.detach().cpu().numpy()
+    mask_np = interior_mask.clamp(0.7, 1).detach().cpu().numpy()
+
+    # Determine value range
+    if vrange is None:
+        vmin = float(data_np.min())
+        vmax = float(data_np.max())
+    else:
+        vmin, vmax = vrange
+
+    # Create a single figure and axis
+    fig, ax = plt.subplots(
+        figsize=(10, 6),
+        subplot_kw={"projection": getattr(domain_info, "projection", None)} if domain_info else {},
+        constrained_layout=True,  # avoids colorbar/tight_layout issues
+    )
+
+    # Plot data
+    im = ax.imshow(
+        data_np,
+        origin="lower",
+        extent=getattr(domain_info, "grid_limits", None) if domain_info else None,
+        alpha=mask_np,
+        vmin=vmin,
+        vmax=vmax,
+        cmap=cmap,
+    )
+
+    # Title and labels
+    ax.set_title(title or "Field", fontsize=15)
+
+    # Add colorbar
+    cbar = fig.colorbar(im, ax=ax, orientation="vertical", aspect=30)
+    cbar.ax.tick_params(labelsize=10)
+
+    # Return the figure object for saving or displaying
+    return fig
+
+
 
 @matplotlib.rc_context(fractional_plot_bundle(1))
 def plot_spatial_error(
@@ -403,6 +469,10 @@ class MapPlot(Plotter):
                 var_vmax = target_slice.flatten(0, 2).max(dim=0)[0].cpu().numpy()
                 var_vranges = list(zip(var_vmin, var_vmax))
 
+                var_min_diff = (torch.abs(pred_slice - target_slice)).flatten(0, 2).min(dim=0)[0].cpu().numpy()
+                var_max_diff = (torch.abs(pred_slice - target_slice)).flatten(0, 2).max(dim=0)[0].cpu().numpy()
+                var_vranges_diff = list(zip(var_min_diff, var_max_diff))
+
                 feature_names = (
                     prediction.feature_names[: self.num_features_to_plot]
                     if self.num_features_to_plot
@@ -417,8 +487,27 @@ class MapPlot(Plotter):
                     var_vranges,
                 )
 
+                self.plot_diff_map(
+                    obj,
+                    pred_slice,
+                    target_slice,
+                    feature_names,
+                    var_vranges_diff,
+                )
+
     @abstractmethod
     def plot_map(
+        self,
+        obj: "AutoRegressiveLightning",
+        prediction: torch.tensor,
+        target: torch.tensor,
+        feature_names: List[str],
+        var_vranges: List,
+    ) -> None:
+        pass
+
+    @abstractmethod
+    def plot_diff_map(
         self,
         obj: "AutoRegressiveLightning",
         prediction: torch.tensor,
@@ -510,6 +599,57 @@ class PredictionTimestepPlot(MapPlot):
         #         make_gif(
         #             paths, self.save_path / f"timestep_evol_per_param/{var_name}.gif"
         #         )
+
+    def plot_diff_map(
+        self,
+        obj: "AutoRegressiveLightning",
+        prediction: torch.tensor,
+        target: torch.tensor,
+        feature_names: List[str],
+        var_vranges: List,
+    ) -> None:
+        # Prediction and target: (pred_steps, Nlat, Nlon, features)
+        paths_dict = defaultdict(list)
+
+        # Start from t=1 to compute diff with t-1
+        for t_i in range(1, len(prediction)):
+            mae = torch.abs(prediction[t_i] - target[t_i])
+
+            units = [obj.dataset_info.units[name] for name in feature_names]
+            var_figs = [
+                plot_1prediction(
+                    mae[:, :, var_i],
+                    obj.interior_2d[:, :, 0],
+                    title=f"{var_name} ({var_unit}), MAE t={t_i} ({obj.dataset_info.pred_step*t_i} h)",
+                    vrange=var_vrange,
+                    domain_info=obj.dataset_info.domain_info,
+                    cmap="seismic",
+                )
+                for var_i, (var_name, var_unit, var_vrange) in enumerate(
+                    zip(feature_names, units, var_vranges)
+                )
+            ]
+
+            tensorboard = obj.logger.experiment
+            for var_name, fig in zip(feature_names, var_figs):
+                fig_name = f"timestep_diff_per_param/{var_name}_example_{self.plotted_examples}"
+                tensorboard.add_figure(fig_name, fig, t_i)
+                fig_full_name = f"{fig_name}_{t_i}.png"
+                if self.save_path is not None and self.save_path.exists():
+                    dest_file = self.save_path / fig_full_name
+                    paths_dict[var_name].append(dest_file)
+                    dest_file.parent.mkdir(exist_ok=True)
+                    fig.savefig(dest_file)
+
+                if obj.mlflow_logger:
+                    run_id = obj.mlflow_logger.version
+                    obj.mlflow_logger.experiment.log_figure(
+                        run_id=run_id,
+                        figure=fig,
+                        artifact_file=f"figures/{fig_full_name}",
+                    )
+
+                plt.close(fig)
 
 class DownscalingPredictionTimestepPlot(MapPlot):
     """
