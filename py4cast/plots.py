@@ -469,9 +469,13 @@ class MapPlot(Plotter):
                 var_vmax = target_slice.flatten(0, 2).max(dim=0)[0].cpu().numpy()
                 var_vranges = list(zip(var_vmin, var_vmax))
 
-                var_min_diff = (torch.abs(pred_slice - target_slice)).flatten(0, 2).min(dim=0)[0].cpu().numpy()
-                var_max_diff = (torch.abs(pred_slice - target_slice)).flatten(0, 2).max(dim=0)[0].cpu().numpy()
-                var_vranges_diff = list(zip(var_min_diff, var_max_diff))
+                # var_min_diff = (torch.abs(pred_slice - target_slice)).flatten(0, 2).min(dim=0)[0].cpu().numpy()
+                # var_max_diff = (torch.abs(pred_slice - target_slice)).flatten(0, 2).max(dim=0)[0].cpu().numpy()
+                # var_vranges_diff = list(zip(var_min_diff, var_max_diff))
+                var_vranges_diff = [[0.0000000e+00, 5.6941833e+00],
+                [0.0000000e+00, 2.5811098e+01],
+                [5.9604645e-08, 2.7272614e+01],
+                [0.0000000e+00, 5.8802734e+02]]
 
                 feature_names = (
                     prediction.feature_names[: self.num_features_to_plot]
