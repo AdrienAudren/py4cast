@@ -29,6 +29,6 @@ model:
     add_skip_connections: true
     attention_code: "torch"
     stochastic: False
-    CondLayerNorm: False # use ConditionalLayerNorm instead of LayerNorm
+    CondLayerNorm: True # use ConditionalLayerNorm instead of LayerNorm
     # time_emb_dim: 128
     # shortcut_length: true # activate flow matching step size embedding

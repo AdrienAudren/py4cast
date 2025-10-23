@@ -542,6 +542,58 @@ class MetricACC(Metric):
 
         return metric_log_dict
         
+# class MetricSpread(Metric):
+#     """
+#     Compute the spatially averaged, per pred step members spread for both the target (PE-AROME) and the prediction
+#     """
+
+#     def __init__(self, dataset_info: DatasetInfo, pred_step: int = 0):
+#         super().__init__()
+#         self.pred_step = pred_step 
+        
+#         self.add_state("preds", default=[], dist_reduce_fx="cat")
+#         self.add_state("targets", default=[], dist_reduce_fx="cat")
+#         # dist_reduce_fx="cat" because we gather multiple batch before computing std
+
+#         self.dataset_name = dataset_info.name
+
+#     def update(self, pred: NamedTensor, target: NamedTensor, *args):
+#         """
+#         Assuming a batch contains the members of a same ensemble,
+#         compute the spread of batch=members for both target and pred.
+#         prediction/target: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
+#         called at each end of step
+#         """
+
+#         # a priori unknown number of spatial dims
+#         # but they are all after pred_steps and before features
+#         self.spatial_dims = tuple(pred.spatial_dim_idx)
+#         if pred.tensor.shape != target.tensor.shape:
+#             raise ValueError("preds and target must have the same shape")
+
+#         self.preds.append(pred.tensor)
+#         self.targets.append(target.tensor)
+        
+#     def compute(self, prefix: str = "val") -> dict:
+#         """
+#         Compute spread mean for each channels/features, return a dict.
+#         Should be called at each epoch's end
+#         """
+#         # Ensure concatenating into a single tensor along device dimension
+#         preds = dim_zero_cat(self.preds)
+#         targets = dim_zero_cat(self.targets)
+#         # Spread computation
+#         preds_std = preds.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in self.spatial_dims]))
+#         targets_std = targets.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in self.spatial_dims]))
+#         # Reconvert to initial type then reset metric's state
+#         self.preds = []
+#         self.targets = []
+#         self.reset()
+
+#         return {"preds": preds_std,
+#                 f"{self.dataset_name}": targets_std,
+#                 }
+
 class MetricSpread(Metric):
     """
     Compute the spatially averaged, per pred step members spread for both the target (PE-AROME) and the prediction
@@ -552,27 +604,18 @@ class MetricSpread(Metric):
         self.pred_step = pred_step 
         
         self.add_state("preds", default=[], dist_reduce_fx="cat")
-        self.add_state("targets", default=[], dist_reduce_fx="cat")
         # dist_reduce_fx="cat" because we gather multiple batch before computing std
 
         self.dataset_name = dataset_info.name
 
-    def update(self, pred: NamedTensor, target: NamedTensor, *args):
+    def update(self, pred: torch.Tensor, *args):
         """
         Assuming a batch contains the members of a same ensemble,
         compute the spread of batch=members for both target and pred.
         prediction/target: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
         called at each end of step
         """
-
-        # a priori unknown number of spatial dims
-        # but they are all after pred_steps and before features
-        self.spatial_dims = tuple(pred.spatial_dim_idx)
-        if pred.tensor.shape != target.tensor.shape:
-            raise ValueError("preds and target must have the same shape")
-
         self.preds.append(pred.tensor)
-        self.targets.append(target.tensor)
         
     def compute(self, prefix: str = "val") -> dict:
         """
@@ -581,17 +624,13 @@ class MetricSpread(Metric):
         """
         # Ensure concatenating into a single tensor along device dimension
         preds = dim_zero_cat(self.preds)
-        targets = dim_zero_cat(self.targets)
         # Spread computation
-        preds_std = preds.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in self.spatial_dims]))
-        targets_std = targets.std(dim=0).mean(dim=tuple([spatial_dim-1 for spatial_dim in self.spatial_dims]))
+        preds_std = preds.std(dim=1).mean(0,2,3)
         # Reconvert to initial type then reset metric's state
         self.preds = []
-        self.targets = []
         self.reset()
 
         return {"preds": preds_std,
-                f"{self.dataset_name}": targets_std,
                 }
 
 class MetricMapSpread(Metric):
@@ -640,6 +679,53 @@ class MetricMapSpread(Metric):
 
         return {"preds": preds_std,
                 "pearo": targets_std,
+                }
+    
+class MetricBias(Metric):
+    """
+    Compute the skill = RMSE of ensemble mean (Fortin et al. 2014) with TITAN test target rollout as ground truth
+    """
+
+    def __init__(self, dataset_info: DatasetInfo, pred_step: int = 0):
+        super().__init__()
+        self.pred_step = pred_step 
+        
+        self.add_state("preds", default=[], dist_reduce_fx="cat")
+        self.add_state("titan", default=[], dist_reduce_fx="cat")
+        # dist_reduce_fx="cat" because we gather multiple batch before computing std
+
+        self.dataset_name = dataset_info.name
+
+    def update(self, pred: torch.Tensor, target: torch.Tensor, *args):
+        """
+        Assuming a batch contains the members of a same ensemble,
+        compute the spread of batch=members for both target and pred.
+        prediction/target: (B, Mb, pred_steps, N_grid, d_f) / (B, pred_steps, W, H, d_f)
+        called at each end of step
+        """
+
+        if pred.shape != target.shape:
+            raise ValueError("preds and target must have the same shape")
+
+        self.preds.append(pred)
+        self.titan.append(target)
+
+    def compute(self, prefix: str = "val") -> dict:
+        """
+        Compute spread mean for each channels/features, return a dict.
+        Should be called at each epoch's end
+        """
+        # Ensure concatenating into a single tensor along device dimension
+        preds = dim_zero_cat(self.preds)
+        titan = dim_zero_cat(self.titan)
+        # skill computation
+        preds_skill = torch.mean((preds.mean(dim=1) - titan) ** 2, dim=(0, 2, 3))
+        # Reconvert to initial type then reset metric's state
+        self.preds = []
+        self.titan = []
+        self.reset()
+
+        return {"skill": preds_skill, # (pred_steps, d_f)
                 }
 
 class MetricSquaredSkill(Metric):

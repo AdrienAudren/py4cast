@@ -1574,13 +1574,13 @@ class AutoRegressiveLightning(LightningModule):
 
             self.test_plotters = [
                 StateErrorPlot(metrics, save_path=self.save_path),
-                SpatialErrorPlot(),
-                PredictionTimestepPlot(
-                    num_samples_to_plot=self.num_samples_to_plot,
-                    num_features_to_plot=6,
-                    prefix="Test",
-                    save_path=self.save_path,
-                )
+                # SpatialErrorPlot(),
+                # PredictionTimestepPlot(
+                #     num_samples_to_plot=self.num_samples_to_plot,
+                #     num_features_to_plot=6,
+                #     prefix="Test",
+                #     save_path=self.save_path,
+                # )
             ]
             if self.dynamical_downscaling:
                 self.test_plotters.append(
@@ -1592,40 +1592,51 @@ class AutoRegressiveLightning(LightningModule):
                 )
                 )
 
-            if self.ensemble_metrics:
-                self.test_plotters.append(SpreadTimestepPlot(
-                    metric=self.spread_map_metric,
-                    dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=self.num_samples_to_plot,
-                    num_features_to_plot=6,
-                    prefix="Test",
-                    save_path=self.save_path,
-                ))
-                self.test_plotters.append(SpreadSkillPlot(
-                    metric_spread=self.unbVar_metric,
-                    metric_error=self.skill_metric,
-                    dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=93,
-                    num_features_to_plot=6,
-                    prefix="Test",
-                    save_path=self.save_path,
-                    num_pred_steps_test=self.num_pred_steps_val_test,
-                ))
-                self.test_plotters.append(CRPSPlot(
-                    metric=self.crps_metric,
-                    dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=93,
-                    num_features_to_plot=6,
-                    prefix="Test",
-                    save_path=self.save_path,
-                    num_pred_steps_test=self.num_pred_steps_val_test,
-                ))
+            # if self.ensemble_metrics:
+            #     self.test_plotters.append(SpreadTimestepPlot(
+            #         metric=self.spread_map_metric,
+            #         dataset_name = self.dataset_info.name,
+            #         num_samples_to_plot=self.num_samples_to_plot,
+            #         num_features_to_plot=6,
+            #         prefix="Test",
+            #         save_path=self.save_path,
+            #     ))
+            #     self.test_plotters.append(SpreadSkillPlot(
+            #         metric_spread=self.unbVar_metric,
+            #         metric_error=self.skill_metric,
+            #         dataset_name = self.dataset_info.name,
+            #         num_samples_to_plot=93,
+            #         num_features_to_plot=6,
+            #         prefix="Test",
+            #         save_path=self.save_path,
+            #         num_pred_steps_test=self.num_pred_steps_val_test,
+            #     ))
+            #     self.test_plotters.append(CRPSPlot(
+            #         metric=self.crps_metric,
+            #         dataset_name = self.dataset_info.name,
+            #         num_samples_to_plot=93,
+            #         num_features_to_plot=6,
+            #         prefix="Test",
+            #         save_path=self.save_path,
+            #         num_pred_steps_test=self.num_pred_steps_val_test,
+            #     ))
 
     def test_step(self, batch: ItemBatch, batch_idx):
         """
         Run test on single batch
         """
         prediction, target, lowres, _ = self._shared_val_test_step(batch, batch_idx, "test")
+
+        # if self.noise_members > 1:
+        #     # select random member for preds
+        #     # prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
+        #     # member = prediction_tensor[:, torch.randint(0, self.noise_members, (1,)).item()]
+        #     # prediction = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
+
+        #     # select mean of members 
+        #     prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
+        #     member = torch.mean(prediction_tensor, dim=1)
+        #     prediction = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
 
         if self.logging_enabled:
             
@@ -1667,12 +1678,12 @@ class AutoRegressiveLightning(LightningModule):
                 else:
                     plotter.update(self, prediction=sliced_prediction, target=sliced_target)
 
-            self.acc_metric.update(prediction, target)
-            if self.dynamical_downscaling:
-                self.downscale_psd_plot_metric.update(prediction, target, lowres, self.original_shape)
-            else:
-                self.psd_plot_metric.update(prediction, target, self.original_shape)
-            self.rmse_psd_plot_metric.update(prediction, target, self.original_shape)
+            # self.acc_metric.update(prediction, target)
+            # if self.dynamical_downscaling:
+            #     self.downscale_psd_plot_metric.update(prediction, target, lowres, self.original_shape)
+            # else:
+            #     self.psd_plot_metric.update(prediction, target, self.original_shape)
+            # self.rmse_psd_plot_metric.update(prediction, target, self.original_shape)
 
     @cached_property
     def interior_2d(self) -> torch.Tensor:
@@ -1691,36 +1702,36 @@ class AutoRegressiveLightning(LightningModule):
         Compute test metrics and make plots at the end of test epoch.
         """
         if self.logging_enabled:
-            dict_metrics = {}
-            if self.dynamical_downscaling:
-                dict_metrics.update(self.downscale_psd_plot_metric.compute(prefix="test"))
-            else:
-                dict_metrics.update(self.psd_plot_metric.compute(prefix="test"))
-            dict_metrics.update(self.rmse_psd_plot_metric.compute(prefix="test"))
-            dict_metrics.update(self.acc_metric.compute(prefix="test"))
+            # dict_metrics = {}
+            # if self.dynamical_downscaling:
+            #     dict_metrics.update(self.downscale_psd_plot_metric.compute(prefix="test"))
+            # else:
+            #     dict_metrics.update(self.psd_plot_metric.compute(prefix="test"))
+            # dict_metrics.update(self.rmse_psd_plot_metric.compute(prefix="test"))
+            # dict_metrics.update(self.acc_metric.compute(prefix="test"))
 
-            for name, elmnt in dict_metrics.items():
-                if isinstance(elmnt, matplotlib.figure.Figure):
-                    # Tensorboard logger
-                    self.logger.experiment.add_figure(
-                        f"{name}", elmnt, self.current_epoch
-                    )
-                    # If MLFlowLogger activated
-                    if self.mlflow_logger:
-                        run_id = self.mlflow_logger.version
-                        self.mlflow_logger.experiment.log_figure(
-                            run_id=run_id,
-                            figure=elmnt,
-                            artifact_file=f"figures/{name}.png",
-                        )
-                elif isinstance(elmnt, torch.Tensor):
-                    self.log_dict(
-                        {name: elmnt},
-                        prog_bar=False,
-                        on_step=False,
-                        on_epoch=True,
-                        sync_dist=True,
-                    )
+            # for name, elmnt in dict_metrics.items():
+            #     if isinstance(elmnt, matplotlib.figure.Figure):
+            #         # Tensorboard logger
+            #         self.logger.experiment.add_figure(
+            #             f"{name}", elmnt, self.current_epoch
+            #         )
+            #         # If MLFlowLogger activated
+            #         if self.mlflow_logger:
+            #             run_id = self.mlflow_logger.version
+            #             self.mlflow_logger.experiment.log_figure(
+            #                 run_id=run_id,
+            #                 figure=elmnt,
+            #                 artifact_file=f"figures/{name}.png",
+            #             )
+            #     elif isinstance(elmnt, torch.Tensor):
+            #         self.log_dict(
+            #             {name: elmnt},
+            #             prog_bar=False,
+            #             on_step=False,
+            #             on_epoch=True,
+            #             sync_dist=True,
+            #         )
 
             # Notify plotters that the test epoch end
             for plotter in self.test_plotters:

@@ -21,7 +21,7 @@ export PY4CAST_TITAN_PATH="/data/TITAN" #/fs1/arome/TITAN"
 export http_proxy="http://10.197.209.6:3128"
 export https_proxy="http://10.197.209.6:3128"
 export CKPT_DIR="/scratch/audrena/py4cast_expe/titan_21var"
-export PATH2CKPT="${CKPT_DIR}/mse_ARPdownscale_5em4_multiscale/checkpoints/last.ckpt"
+export PATH2CKPT="${CKPT_DIR}/afcrps_ARPdownScale_0order_1em4_CLN_4M_2BS/checkpoints/epoch=109-val_mean_loss=2.92.ckpt"
 export NCCL_DEBUG=INFO
 
 

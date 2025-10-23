@@ -3,14 +3,14 @@ data:
   dataset_name: titan_refacto2
   num_input_steps: 1
   num_pred_steps_train: 1
-  num_pred_steps_val_test: 60
+  num_pred_steps_val_test: 10
   batch_size: 1 # per device    
-  noise_members: 1 # total number of members
-  noise_strategy: "stochastic_EPA" # 
+  noise_members: 8 # total number of members
+  noise_strategy: "CondLayerNorm" # 
   # shortcut_length: 1 # Flow matching: {1, 2, ..., 128}, DDIM: {1 = from prior, 10 = generative}
   dynamical_downscaling: False # dynamically downscale the forcing, only for flow matching
   #other args
-  ensemble_metrics: False
+  ensemble_metrics: True
   features_to_plot: ["aro_t_850hpa", "aro_u_850hpa", "aro_v_850hpa", "aro_z_850hpa"] # ["full"] # ["aro_t2m_2m", "aro_tp_0m", "aro_r2_2m", "aro_v10_10m", "aro_t_850hpa", "aro_z_500hpa"]  #  for test step only ["aro_t_850hpa", "aro_u_850hpa", "aro_v_850hpa", "aro_z_850hpa"]
   num_workers: 3
   prefetch_factor: null

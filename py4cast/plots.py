@@ -1795,16 +1795,23 @@ class StateErrorPlot(Plotter):
         for name in self.metrics:
 
             if name == "std":
+                prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
+
                 if not self.initialized:
-                    self.metrics[name].update(prediction, target)
+                    self.metrics[name].update(prediction_tensor)
                     self.epoch_dict_loss = self.metrics[name].compute(prefix="test")
                 else:
-                    self.metrics[name].update(prediction, target)
+                    self.metrics[name].update(prediction_tensor)
                     dict_loss = self.metrics[name].compute(prefix="test")
                     for key, value in dict_loss.items():
                         self.epoch_dict_loss[key] += value
                     self.count+=1
             else:
+                # select mean of members 
+                prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
+                member = torch.mean(prediction_tensor, dim=1)
+                prediction = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
+
                 self.losses[name].append(
                     obj.trainer.strategy.reduce(
                         self.metrics[name](prediction, target), reduce_op="mean"
