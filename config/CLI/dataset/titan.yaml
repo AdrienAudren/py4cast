@@ -3,8 +3,8 @@ data:
   dataset_name: titan_refacto2
   num_input_steps: 1
   num_pred_steps_train: 1
-  num_pred_steps_val_test: 10
-  batch_size: 1 # per device    
+  num_pred_steps_val_test: 1
+  batch_size: 5 # per device    
   noise_members: 8 # total number of members
   noise_strategy: "CondLayerNorm" # 
   # shortcut_length: 1 # Flow matching: {1, 2, ..., 128}, DDIM: {1 = from prior, 10 = generative}

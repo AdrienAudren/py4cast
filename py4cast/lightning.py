@@ -31,7 +31,7 @@ from py4cast.datasets import get_datasets
 from py4cast.datasets.base import DatasetInfo, ItemBatch, NamedTensor, Statics
 from py4cast.io.outputs import GribSavingSettings, save_named_tensors_to_grib
 from py4cast.losses import ScaledLoss, WeightedLoss, MultiScaleLoss
-from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDKdownscaling, MetricPSDVar, MetricSpread, MetricMapSpread, MetricSquaredSkill, MetricUnbiasedVariance, MetricCRPS
+from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDKdownscaling, MetricPSDVar, MetricSpread, MetricMapSpread, MetricBias, MetricSquaredSkill, MetricUnbiasedVariance, MetricCRPS
 from py4cast.models import build_model_from_settings, get_model_kls_and_settings
 from py4cast.models import registry as model_registry
 from py4cast.plots import (
@@ -368,6 +368,7 @@ class AutoRegressiveLightning(LightningModule):
             self.acc_metric = MetricACC(self.dataset_info)
             self.spread_metric = MetricSpread(self.dataset_info, pred_step=max_pred_step+1)
             self.spread_map_metric = MetricMapSpread(self.dataset_info, pred_step=max_pred_step+1)
+            self.bias_metric = MetricBias(self.dataset_info, pred_step=max_pred_step+1)
             self.skill_metric = MetricSquaredSkill(self.dataset_info, pred_step=max_pred_step+1)
             self.unbVar_metric = MetricUnbiasedVariance(self.dataset_info, pred_step=max_pred_step+1)
             self.crps_metric = MetricCRPS(self.dataset_info, pred_step=max_pred_step+1)
@@ -900,27 +901,27 @@ class AutoRegressiveLightning(LightningModule):
                     new_state = predicted_state
 
                 # Only update the prev_states if we are not at the last step
-                if i < batch.num_pred_steps - 1 or k < num_inter_steps - 1:
-                    # Update input states for next iteration: drop oldest, append new_state
-                    timestep_dim_index = batch.inputs.dim_index("timestep")
-                    new_prev_states_tensor = torch.cat(
-                        [
-                            # Drop the oldest timestep (select all but the first)
-                            prev_states.index_select_dim(
-                                "timestep",
-                                range(1, prev_states.dim_size("timestep")),
-                            ),
-                            # Add the timestep dimension to the new state
-                            new_state.unsqueeze(timestep_dim_index),
-                        ],
-                        dim=timestep_dim_index,
-                    )
+                # if i < batch.num_pred_steps - 1 or k < num_inter_steps - 1:
+                #     # Update input states for next iteration: drop oldest, append new_state
+                #     timestep_dim_index = batch.inputs.dim_index("timestep")
+                #     new_prev_states_tensor = torch.cat(
+                #         [
+                #             # Drop the oldest timestep (select all but the first)
+                #             prev_states.index_select_dim(
+                #                 "timestep",
+                #                 range(1, prev_states.dim_size("timestep")),
+                #             ),
+                #             # Add the timestep dimension to the new state
+                #             new_state.unsqueeze(timestep_dim_index),
+                #         ],
+                #         dim=timestep_dim_index,
+                #     )
 
-                    # Make a new NamedTensor with the same dim and
-                    # feature names as the original prev_states
-                    prev_states = NamedTensor.new_like(
-                        new_prev_states_tensor, prev_states
-                    )
+                #     # Make a new NamedTensor with the same dim and
+                #     # feature names as the original prev_states
+                #     prev_states = NamedTensor.new_like(
+                #         new_prev_states_tensor, prev_states
+                #     )
             # Append prediction to prediction list only "normal steps"
             prediction_list.append(new_state)
 
@@ -940,7 +941,6 @@ class AutoRegressiveLightning(LightningModule):
             pred_out = NamedTensor.new_like(
                 prediction.type_as(batch.outputs.tensor), batch.outputs
             )
-
         return pred_out, batch.outputs # aro_outputs_upsampled_nt
 
     def _common_step_FM_training(
@@ -1442,6 +1442,7 @@ class AutoRegressiveLightning(LightningModule):
 
     def _shared_val_test_step(self, batch: ItemBatch, batch_idx, label: str):
         with torch.no_grad():
+            
             if self.shortcut_length is not None:
                 loss_prediction, loss_target = self.common_step_FM_training(batch)
                 prediction, target, lowres = self.common_step_FM_sampling(batch)
@@ -1451,8 +1452,14 @@ class AutoRegressiveLightning(LightningModule):
                 )
             else:
                 prediction, target = self.common_step(batch)
+
+                # select mean of members 
+                prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
+                member = torch.mean(prediction_tensor, dim=1)
+                preds = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
+
                 lowres = None
-                time_step_loss = torch.mean(self.loss(prediction, target, epoch=self.current_epoch), dim=0)
+                time_step_loss = torch.mean(self.loss(preds, target, epoch=self.current_epoch), dim=0)
 
         mean_loss = torch.mean(time_step_loss)
 
@@ -1571,9 +1578,10 @@ class AutoRegressiveLightning(LightningModule):
 
             if self.ensemble_metrics:
                 metrics["std"] = self.spread_metric
+                metrics["bias"] = self.bias_metric
 
             self.test_plotters = [
-                StateErrorPlot(metrics, save_path=self.save_path),
+                StateErrorPlot(metrics, save_path=self.save_path, batch_size=self.batch_size, noise_members=self.noise_members),
                 # SpatialErrorPlot(),
                 # PredictionTimestepPlot(
                 #     num_samples_to_plot=self.num_samples_to_plot,

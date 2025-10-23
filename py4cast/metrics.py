@@ -615,7 +615,7 @@ class MetricSpread(Metric):
         prediction/target: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
         called at each end of step
         """
-        self.preds.append(pred.tensor)
+        self.preds.append(pred)
         
     def compute(self, prefix: str = "val") -> dict:
         """
@@ -625,7 +625,7 @@ class MetricSpread(Metric):
         # Ensure concatenating into a single tensor along device dimension
         preds = dim_zero_cat(self.preds)
         # Spread computation
-        preds_std = preds.std(dim=1).mean(0,2,3)
+        preds_std = preds.std(dim=1).mean(dim=(0,2,3))
         # Reconvert to initial type then reset metric's state
         self.preds = []
         self.reset()
@@ -703,10 +703,6 @@ class MetricBias(Metric):
         prediction/target: (B, Mb, pred_steps, N_grid, d_f) / (B, pred_steps, W, H, d_f)
         called at each end of step
         """
-
-        if pred.shape != target.shape:
-            raise ValueError("preds and target must have the same shape")
-
         self.preds.append(pred)
         self.titan.append(target)
 

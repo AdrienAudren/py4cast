@@ -1,7 +1,7 @@
 # lightning.pytorch==2.4.0
 seed_everything: true
 
-ckpt_path: /scratch/audrena/py4cast_expe/titan_21var/afcrps_ARPdownScale_0order_1em4_CLN_4M_2BS/checkpoints/epoch=109-val_mean_loss=2.92.ckpt #${oc.decode:${oc.env:PATH2CKPT}} #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
+ckpt_path: /scratch/audrena/py4cast_expe/titan_21var/Ccrps_ARPdownScale_0order_5em4_CLN_2M_3BS_v2/checkpoints/epoch=129-val_mean_loss=3.06.ckpt #${oc.decode:${oc.env:PATH2CKPT}} #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
 
 # optimizer:
 #   class_path: torch.optim.AdamW
@@ -29,8 +29,8 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
       init_args:
         # default_hp_metric: False # see if tensoboard still works before rm TODO
         save_dir:  ${oc.decode:${oc.env:CKPT_DIR}}                     #titan_30varARP/ #       "/py4cast_root_dir/titan_6var/" "/py4cast_root_dir/test_metrics" # Root directory
-        name:       afcrps_ARPdownScale_0order_1em4_CLN_4M_2BS                     # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
-        version:   bias_std # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
+        name:       Ccrps_ARPdownScale_0order_5em4_CLN_2M_3BS_v2                     # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
+        version:   bias_spread_2yr_8M # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
     # Your logs will be saved in save_dir/*name*/version/
     # (checkpoints, config.yaml, images, scores, tensorboard logs, ...)
     # Lightning automatically increments the version index of your experiment

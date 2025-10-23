@@ -1770,6 +1770,8 @@ class StateErrorPlot(Plotter):
         metrics: Dict[str, Metric],
         prefix: str = "Test",
         save_path: Path = None,
+        batch_size: int = 1,
+        noise_members: int = 8,
     ):
         self.metrics = metrics
         self.prefix = prefix
@@ -1780,8 +1782,12 @@ class StateErrorPlot(Plotter):
         self.save_path = save_path
         for metric in self.metrics:
             self.losses[metric] = []
-        self.count=1
-        self.epoch_dict_loss = {}
+        self.count_std=1
+        self.count_bias=1
+        self.epoch_dict_loss_std = {}
+        self.epoch_dict_loss_bias = {}
+        self.batch_size = batch_size
+        self.noise_members = noise_members
 
     def update(
         self,
@@ -1799,22 +1805,35 @@ class StateErrorPlot(Plotter):
 
                 if not self.initialized:
                     self.metrics[name].update(prediction_tensor)
-                    self.epoch_dict_loss = self.metrics[name].compute(prefix="test")
+                    self.epoch_dict_loss_std = self.metrics[name].compute(prefix="test")
                 else:
                     self.metrics[name].update(prediction_tensor)
-                    dict_loss = self.metrics[name].compute(prefix="test")
-                    for key, value in dict_loss.items():
-                        self.epoch_dict_loss[key] += value
-                    self.count+=1
+                    dict_loss_std = self.metrics[name].compute(prefix="test")
+                    for key, value in dict_loss_std.items():
+                        self.epoch_dict_loss_std[key] += value
+                    self.count_std+=1
+
+            elif name == "bias":
+                prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
+
+                if not self.initialized:
+                    self.metrics[name].update(prediction_tensor, target.tensor)
+                    self.epoch_dict_loss_bias = self.metrics[name].compute(prefix="test")
+                else:
+                    self.metrics[name].update(prediction_tensor, target.tensor)
+                    dict_loss_bias = self.metrics[name].compute(prefix="test")
+                    for key, value in dict_loss_bias.items():
+                        self.epoch_dict_loss_bias[key] += value
+                    self.count_bias+=1
             else:
                 # select mean of members 
                 prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
                 member = torch.mean(prediction_tensor, dim=1)
-                prediction = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
+                preds = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
 
                 self.losses[name].append(
                     obj.trainer.strategy.reduce(
-                        self.metrics[name](prediction, target), reduce_op="mean"
+                        self.metrics[name](preds, target), reduce_op="mean"
                     ).cpu()
                 )
         if not self.initialized:
@@ -1833,14 +1852,24 @@ class StateErrorPlot(Plotter):
             for name in self.metrics: 
 
                 if name == "std":
-                    for key, value in self.epoch_dict_loss.items():
-                        self.epoch_dict_loss[key] /= self.count
+                    for key, value in self.epoch_dict_loss_std.items():
+                        self.epoch_dict_loss_std[key] /= self.count_std
 
                     # Log metrics in tensorboard, with x axis as forecast timestep
                     for t in range(loss.shape[0]):
                         for k in range(loss.shape[1]):
                             scalar_name = f"{label}_{name}/timestep_{self.shortnames[k]}"
-                            values = {legend: array[t][k] for legend, array in self.epoch_dict_loss.items()}
+                            values = {legend: array[t][k] for legend, array in self.epoch_dict_loss_std.items()}
+                            tensorboard.add_scalars(scalar_name, values, t + 1)
+                elif name == "bias":
+                    for key, value in self.epoch_dict_loss_bias.items():
+                        self.epoch_dict_loss_bias[key] /= self.count_bias
+
+                    # Log metrics in tensorboard, with x axis as forecast timestep
+                    for t in range(loss.shape[0]):
+                        for k in range(loss.shape[1]):
+                            scalar_name = f"{label}_{name}/timestep_{self.shortnames[k]}"
+                            values = {legend: array[t][k] for legend, array in self.epoch_dict_loss_bias.items()}
                             tensorboard.add_scalars(scalar_name, values, t + 1)
                 else:
                     loss_tensor = torch.cat(self.losses[name], dim=0)

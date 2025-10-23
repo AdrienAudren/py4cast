@@ -12,10 +12,10 @@
             "obs_step_btw_t0": 10800
         },
         "test": {
-            "start": 2021102000,
-            "end": 2021102300,
+            "start": 2021010100,
+            "end": 2022123100,
             "obs_step": 3600,
-            "obs_step_btw_t0": 10800
+            "obs_step_btw_t0": 3600
         }
     },
     "grid":{
