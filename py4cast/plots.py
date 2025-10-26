@@ -124,6 +124,21 @@ def plot_log_psd_downscaling(
     plt.close()
     return fig
 
+def plot_log_psd_noise(
+    k: np.ndarray, psd_pred: np.ndarray,  psd_target: np.ndarray, psd_noisyout: np.ndarray, title: str = ""
+):
+    fig, ax = plt.subplots(figsize=(15, 10))
+    ax.plot(k, psd_pred, label="A-R 1-order pred")
+    ax.plot(k, psd_target, label="AROME")
+    ax.plot(k, psd_noisyout, label="Smoothed (linear in t) AROME")
+    ax.set_xlabel("k")
+    ax.set_ylabel("psd_k")
+    ax.legend()
+    ax.set_title(title)
+    plt.yscale("log")
+    plt.close()
+    return fig
+
 
 @matplotlib.rc_context(fractional_plot_bundle(1))
 def plot_prediction_downscaling(
@@ -173,6 +188,62 @@ def plot_prediction_downscaling(
     axes[0].set_title("AROME", size=15)
     axes[1].set_title("ARPEGE", size=15)
     axes[2].set_title("8 steps Flow Matching", size=15)
+    cbar = fig.colorbar(im, aspect=30)
+    cbar.ax.tick_params(labelsize=10)
+
+    if title:
+        fig.suptitle(title, size=20)
+
+    return fig
+
+@matplotlib.rc_context(fractional_plot_bundle(1))
+def plot_prediction_noise(
+    pred,
+    target,
+    noisyout,
+    interior_mask,
+    domain_info: DomainInfo,
+    title=None,
+    vrange=None,
+    cmap="plasma",
+):
+    """
+    Plot example prediction and grond truth.
+    Each has shape (N_grid,)
+    """
+    # Get common scale for values
+    if vrange is None:
+        vmin = min(vals.min().cpu().item() for vals in (pred, target))
+        vmax = max(vals.max().cpu().item() for vals in (pred, target))
+    else:
+        vmin, vmax = vrange
+
+    # Set up masking of border region
+    # mask_reshaped = obs_mask.reshape(*grid_shape)
+    pixel_alpha = interior_mask.clamp(0.7, 1).cpu().numpy()  # Faded border region
+
+    fig, axes = plt.subplots(
+        1, 3, figsize=(19, 7), subplot_kw={"projection": domain_info.projection}
+    )
+
+    # Plot pred and target
+    for ax, data in zip(axes, (target, pred, noisyout)):
+        ax.coastlines()  # Add coastline outlines
+        # data_grid = data.reshape(*grid_shape).cpu().numpy()
+        im = ax.imshow(
+            data.cpu().numpy(),
+            origin="lower",
+            extent=domain_info.grid_limits,
+            alpha=pixel_alpha,
+            vmin=vmin,
+            vmax=vmax,
+            cmap=cmap,
+        )
+
+    # Ticks and labels
+    axes[0].set_title("AROME", size=15)
+    axes[1].set_title("A-R 1-order pred", size=15)
+    axes[2].set_title("Smoothed (linear in t) AROME", size=15)
     cbar = fig.colorbar(im, aspect=30)
     cbar.ax.tick_params(labelsize=10)
 
@@ -469,13 +540,10 @@ class MapPlot(Plotter):
                 var_vmax = target_slice.flatten(0, 2).max(dim=0)[0].cpu().numpy()
                 var_vranges = list(zip(var_vmin, var_vmax))
 
-                # var_min_diff = (torch.abs(pred_slice - target_slice)).flatten(0, 2).min(dim=0)[0].cpu().numpy()
-                # var_max_diff = (torch.abs(pred_slice - target_slice)).flatten(0, 2).max(dim=0)[0].cpu().numpy()
-                # var_vranges_diff = list(zip(var_min_diff, var_max_diff))
-                var_vranges_diff = [[0.0000000e+00, 5.6941833e+00],
-                [0.0000000e+00, 2.5811098e+01],
-                [5.9604645e-08, 2.7272614e+01],
-                [0.0000000e+00, 5.8802734e+02]]
+                var_min_diff = (torch.abs(pred_slice - target_slice)).flatten(0, 2).min(dim=0)[0].cpu().numpy()
+                var_max_diff = (torch.abs(pred_slice - target_slice)).flatten(0, 2).max(dim=0)[0].cpu().numpy()
+                var_vranges_diff = list(zip(var_min_diff, var_max_diff))
+                # np.save(self.save_path / f"var_vranges_diff.npy", np.array(var_vranges_diff))
 
                 feature_names = (
                     prediction.feature_names[: self.num_features_to_plot]
@@ -604,56 +672,56 @@ class PredictionTimestepPlot(MapPlot):
         #             paths, self.save_path / f"timestep_evol_per_param/{var_name}.gif"
         #         )
 
-    # def plot_diff_map(
-    #     self,
-    #     obj: "AutoRegressiveLightning",
-    #     prediction: torch.tensor,
-    #     target: torch.tensor,
-    #     feature_names: List[str],
-    #     var_vranges: List,
-    # ) -> None:
-    #     # Prediction and target: (pred_steps, Nlat, Nlon, features)
-    #     paths_dict = defaultdict(list)
+    def plot_diff_map(
+        self,
+        obj: "AutoRegressiveLightning",
+        prediction: torch.tensor,
+        target: torch.tensor,
+        feature_names: List[str],
+        var_vranges: List,
+    ) -> None:
+        # Prediction and target: (pred_steps, Nlat, Nlon, features)
+        paths_dict = defaultdict(list)
 
-    #     # Start from t=1 to compute diff with t-1
-    #     for t_i in range(1, len(prediction)):
-    #         mae = torch.abs(prediction[t_i] - target[t_i])
+        # Start from t=1 to compute diff with t-1
+        for t_i in range(1, len(prediction)):
+            mae = torch.abs(prediction[t_i] - target[t_i])
 
-    #         units = [obj.dataset_info.units[name] for name in feature_names]
-    #         var_figs = [
-    #             plot_1prediction(
-    #                 mae[:, :, var_i],
-    #                 obj.interior_2d[:, :, 0],
-    #                 title=f"{var_name} ({var_unit}), MAE t={t_i} ({obj.dataset_info.pred_step*t_i} h)",
-    #                 vrange=var_vrange,
-    #                 domain_info=obj.dataset_info.domain_info,
-    #                 cmap="seismic",
-    #             )
-    #             for var_i, (var_name, var_unit, var_vrange) in enumerate(
-    #                 zip(feature_names, units, var_vranges)
-    #             )
-    #         ]
+            units = [obj.dataset_info.units[name] for name in feature_names]
+            var_figs = [
+                plot_1prediction(
+                    mae[:, :, var_i],
+                    obj.interior_2d[:, :, 0],
+                    title=f"{var_name} ({var_unit}), MAE t={t_i} ({obj.dataset_info.pred_step*t_i} h)",
+                    vrange=var_vrange,
+                    domain_info=obj.dataset_info.domain_info,
+                    cmap="seismic",
+                )
+                for var_i, (var_name, var_unit, var_vrange) in enumerate(
+                    zip(feature_names, units, var_vranges)
+                )
+            ]
 
-    #         tensorboard = obj.logger.experiment
-    #         for var_name, fig in zip(feature_names, var_figs):
-    #             fig_name = f"timestep_diff_per_param/{var_name}_example_{self.plotted_examples}"
-    #             tensorboard.add_figure(fig_name, fig, t_i)
-    #             fig_full_name = f"{fig_name}_{t_i}.png"
-    #             if self.save_path is not None and self.save_path.exists():
-    #                 dest_file = self.save_path / fig_full_name
-    #                 paths_dict[var_name].append(dest_file)
-    #                 dest_file.parent.mkdir(exist_ok=True)
-    #                 fig.savefig(dest_file)
+            tensorboard = obj.logger.experiment
+            for var_name, fig in zip(feature_names, var_figs):
+                fig_name = f"timestep_diff_per_param/{var_name}_example_{self.plotted_examples}"
+                tensorboard.add_figure(fig_name, fig, t_i)
+                fig_full_name = f"{fig_name}_{t_i}.png"
+                if self.save_path is not None and self.save_path.exists():
+                    dest_file = self.save_path / fig_full_name
+                    paths_dict[var_name].append(dest_file)
+                    dest_file.parent.mkdir(exist_ok=True)
+                    fig.savefig(dest_file)
 
-    #             if obj.mlflow_logger:
-    #                 run_id = obj.mlflow_logger.version
-    #                 obj.mlflow_logger.experiment.log_figure(
-    #                     run_id=run_id,
-    #                     figure=fig,
-    #                     artifact_file=f"figures/{fig_full_name}",
-    #                 )
+                if obj.mlflow_logger:
+                    run_id = obj.mlflow_logger.version
+                    obj.mlflow_logger.experiment.log_figure(
+                        run_id=run_id,
+                        figure=fig,
+                        artifact_file=f"figures/{fig_full_name}",
+                    )
 
-    #             plt.close(fig)
+                plt.close(fig)
 
 class DownscalingPredictionTimestepPlot(MapPlot):
     """
@@ -799,6 +867,174 @@ class DownscalingPredictionTimestepPlot(MapPlot):
             tensorboard = obj.logger.experiment
             for var_name, fig in zip(feature_names, var_figs):
                 fig_name = f"downscale_timestep_evol_per_param/{var_name}_example_{self.plotted_examples}"
+                tensorboard.add_figure(fig_name, fig, t_i)
+                fig_full_name = f"{fig_name}_{t_i}.png"
+                if self.save_path is not None and self.save_path.exists():
+                    dest_file = self.save_path / fig_full_name
+                    paths_dict[var_name].append(dest_file)
+                    dest_file.parent.mkdir(exist_ok=True)
+                    fig.savefig(dest_file)
+
+                if obj.mlflow_logger:
+                    run_id = obj.mlflow_logger.version
+                    obj.mlflow_logger.experiment.log_figure(
+                        run_id=run_id,
+                        figure=fig,
+                        artifact_file=f"figures/{fig_full_name}",
+                    )
+
+                plt.close(fig)
+
+        # for var_name, paths in paths_dict.items():
+        #     if len(paths) > 1:
+        #         make_gif(
+        #             paths, self.save_path / f"timestep_evol_per_param/{var_name}.gif"
+        #         )
+
+class NoisePredictionTimestepPlot(MapPlot):
+    """
+    Observer used to plot prediction and target for each timestep.
+    """
+    def __init__(
+        self,
+        num_samples_to_plot: int = 1,
+        num_features_to_plot: Union[None, int] = None,
+        prefix: str = "Test",
+        save_path: Path = None,
+    ):
+        super().__init__(
+            num_samples_to_plot=num_samples_to_plot,
+            num_features_to_plot=num_features_to_plot,
+            prefix=prefix,
+            save_path=save_path,
+        )
+        self.requires_noisyout: bool = True  # This observer requires lowres data
+
+    def update(
+        self,
+        obj: "AutoRegressiveLightning",
+        prediction: NamedTensor,
+        target: NamedTensor,
+        noisyout: NamedTensor,
+    ) -> None:
+        """
+        Update. Should be call by "on_{training/validation/test}_step
+        """
+        pred = deepcopy(prediction).tensor  # In order to not modify the input
+        targ = deepcopy(target).tensor  # In order to not modify the input
+        noisyout = deepcopy(noisyout).tensor  # In order to not modify the input
+        # Here we reshape output from GNNS to be on the grid
+        if prediction.num_spatial_dims == 1:
+            pred = einops.rearrange(
+                pred, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
+            )
+            targ = einops.rearrange(
+                targ, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
+            )
+            noisyout = einops.rearrange(
+                noisyout, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
+            )
+
+        if (
+            obj.trainer.is_global_zero
+            # and self.plotted_examples < self.num_samples_to_plot
+        ):
+            # Need to plot more example predictions
+            n_additional_examples = min(
+                pred.shape[0], self.num_samples_to_plot - self.plotted_examples
+            )
+            # Rescale to original data scale
+            if obj.noise_strategy == "ddim":
+                # unnormalized [-1,1]
+                max_stat = obj.stats.to_list("max", prediction.feature_names).to(
+                    pred, non_blocking=True
+                )
+                min_stat = obj.stats.to_list("min", prediction.feature_names).to(
+                    pred, non_blocking=True
+                )
+                prediction_rescaled = (pred + 1)*(max_stat - min_stat) / 2 + min_stat
+                target_rescaled = (targ + 1)*(max_stat - min_stat) / 2 + min_stat
+                noisyout_rescaled = (noisyout + 1)*(max_stat - min_stat) / 2 + min_stat
+            else:
+                std = obj.stats.to_list("std", prediction.feature_names).to(
+                    pred, non_blocking=True
+                )
+                mean = obj.stats.to_list("mean", prediction.feature_names).to(
+                    pred, non_blocking=True
+                )
+                prediction_rescaled = pred * std + mean
+                target_rescaled = targ * std + mean
+                noisyout_rescaled = noisyout * std + mean
+
+                # save in numpy file std and mean
+                if self.save_path is not None:  
+                    np.save(self.save_path / "std.npy", std.cpu().numpy())
+                    np.save(self.save_path / "mean.npy", mean.cpu().numpy())
+            
+            # Iterate over the examples
+            # We assume examples are already on grid
+            for pred_slice, target_slice, noisyout_slice in zip(
+                prediction_rescaled[:n_additional_examples],
+                target_rescaled[:n_additional_examples],
+                noisyout_rescaled[:n_additional_examples],
+            ):
+                # Each slice is (pred_steps, Nlat, Nlon, features)
+                self.plotted_examples += 1  # Increment already here
+
+                var_vmin = target_slice.flatten(0, 2).min(dim=0)[0].cpu().numpy()
+                var_vmax = target_slice.flatten(0, 2).max(dim=0)[0].cpu().numpy()
+                var_vranges = list(zip(var_vmin, var_vmax))
+
+                feature_names = (
+                    prediction.feature_names[: self.num_features_to_plot]
+                    if self.num_features_to_plot
+                    else prediction.feature_names
+                )
+
+                self.plot_map(
+                    obj,
+                    pred_slice,
+                    target_slice,
+                    noisyout_slice,
+                    feature_names,
+                    var_vranges,
+                )
+
+    def plot_map(
+        self,
+        obj: "AutoRegressiveLightning",
+        prediction: torch.tensor,
+        target: torch.tensor,
+        noisyout: torch.tensor,
+        feature_names: List[str],
+        var_vranges: List,
+    ) -> None:
+        # Prediction and target: (pred_steps, Nlat, Nlon, features)
+        # Iterate over prediction horizon time steps
+        paths_dict = defaultdict(list)
+        for t_i, (pred_t, target_t, noisyout_t) in enumerate(zip(prediction, target, noisyout), start=1):
+            # Create one figure per variable at this time step
+            # This generate a matplotlib warning as more than 20 figures are plotted.
+            units = [obj.dataset_info.units[name] for name in feature_names]
+            var_figs = [
+                plot_prediction_noise(
+                    pred_t[:, :, var_i],
+                    target_t[:, :, var_i],
+                    noisyout_t[:, :, var_i],
+                    obj.interior_2d[:, :, 0],
+                    title=f"{var_name} ({var_unit}), "
+                    f"t={t_i} ({obj.dataset_info.pred_step*t_i} h)",
+                    vrange=var_vrange,
+                    domain_info=obj.dataset_info.domain_info,
+                )
+                for var_i, (var_name, var_unit, var_vrange) in enumerate(
+                    zip(feature_names, units, var_vranges)
+                )
+            ]
+            # TODO : don't create all figs at once to avoid matplotlib warning
+            tensorboard = obj.logger.experiment
+            for var_name, fig in zip(feature_names, var_figs):
+                fig_name = f"noise_timestep_evol_per_param/{var_name}_example_{self.plotted_examples}"
                 tensorboard.add_figure(fig_name, fig, t_i)
                 fig_full_name = f"{fig_name}_{t_i}.png"
                 if self.save_path is not None and self.save_path.exists():
@@ -1770,8 +2006,6 @@ class StateErrorPlot(Plotter):
         metrics: Dict[str, Metric],
         prefix: str = "Test",
         save_path: Path = None,
-        batch_size: int = 1,
-        noise_members: int = 8,
     ):
         self.metrics = metrics
         self.prefix = prefix
@@ -1782,12 +2016,8 @@ class StateErrorPlot(Plotter):
         self.save_path = save_path
         for metric in self.metrics:
             self.losses[metric] = []
-        self.count_std=1
-        self.count_bias=1
-        self.epoch_dict_loss_std = {}
-        self.epoch_dict_loss_bias = {}
-        self.batch_size = batch_size
-        self.noise_members = noise_members
+        self.count=1
+        self.epoch_dict_loss = {}
 
     def update(
         self,
@@ -1801,39 +2031,19 @@ class StateErrorPlot(Plotter):
         for name in self.metrics:
 
             if name == "std":
-                prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
-
                 if not self.initialized:
-                    self.metrics[name].update(prediction_tensor)
-                    self.epoch_dict_loss_std = self.metrics[name].compute(prefix="test")
+                    self.metrics[name].update(prediction, target)
+                    self.epoch_dict_loss = self.metrics[name].compute(prefix="test")
                 else:
-                    self.metrics[name].update(prediction_tensor)
-                    dict_loss_std = self.metrics[name].compute(prefix="test")
-                    for key, value in dict_loss_std.items():
-                        self.epoch_dict_loss_std[key] += value
-                    self.count_std+=1
-
-            elif name == "bias":
-                prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
-
-                if not self.initialized:
-                    self.metrics[name].update(prediction_tensor, target.tensor)
-                    self.epoch_dict_loss_bias = self.metrics[name].compute(prefix="test")
-                else:
-                    self.metrics[name].update(prediction_tensor, target.tensor)
-                    dict_loss_bias = self.metrics[name].compute(prefix="test")
-                    for key, value in dict_loss_bias.items():
-                        self.epoch_dict_loss_bias[key] += value
-                    self.count_bias+=1
+                    self.metrics[name].update(prediction, target)
+                    dict_loss = self.metrics[name].compute(prefix="test")
+                    for key, value in dict_loss.items():
+                        self.epoch_dict_loss[key] += value
+                    self.count+=1
             else:
-                # select mean of members 
-                prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
-                member = torch.mean(prediction_tensor, dim=1)
-                preds = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
-
                 self.losses[name].append(
                     obj.trainer.strategy.reduce(
-                        self.metrics[name](preds, target), reduce_op="mean"
+                        self.metrics[name](prediction, target), reduce_op="mean"
                     ).cpu()
                 )
         if not self.initialized:
@@ -1852,24 +2062,14 @@ class StateErrorPlot(Plotter):
             for name in self.metrics: 
 
                 if name == "std":
-                    for key, value in self.epoch_dict_loss_std.items():
-                        self.epoch_dict_loss_std[key] /= self.count_std
+                    for key, value in self.epoch_dict_loss.items():
+                        self.epoch_dict_loss[key] /= self.count
 
                     # Log metrics in tensorboard, with x axis as forecast timestep
                     for t in range(loss.shape[0]):
                         for k in range(loss.shape[1]):
                             scalar_name = f"{label}_{name}/timestep_{self.shortnames[k]}"
-                            values = {legend: array[t][k] for legend, array in self.epoch_dict_loss_std.items()}
-                            tensorboard.add_scalars(scalar_name, values, t + 1)
-                elif name == "bias":
-                    for key, value in self.epoch_dict_loss_bias.items():
-                        self.epoch_dict_loss_bias[key] /= self.count_bias
-
-                    # Log metrics in tensorboard, with x axis as forecast timestep
-                    for t in range(loss.shape[0]):
-                        for k in range(loss.shape[1]):
-                            scalar_name = f"{label}_{name}/timestep_{self.shortnames[k]}"
-                            values = {legend: array[t][k] for legend, array in self.epoch_dict_loss_bias.items()}
+                            values = {legend: array[t][k] for legend, array in self.epoch_dict_loss.items()}
                             tensorboard.add_scalars(scalar_name, values, t + 1)
                 else:
                     loss_tensor = torch.cat(self.losses[name], dim=0)

@@ -6,7 +6,7 @@ data:
   num_pred_steps_val_test: 41
   batch_size: 16 # per device    
   noise_members: 1 # total number of members
-  noise_strategy: "CondLayerNorm" # 
+  noise_strategy: "stochastic_EPA" # 
   # shortcut_length: 1 # Flow matching: {1, 2, ..., 128}, DDIM: {1 = from prior, 10 = generative}
   dynamical_downscaling: False # dynamically downscale the forcing, only for flow matching
   #other args

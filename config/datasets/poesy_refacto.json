@@ -18,7 +18,7 @@
         },
         "valid": {
             "start": 20210717,
-            "end": 20211115,
+            "end": 20210717,
             "refcst_daily_runs": [75600],
             "refcst_leadtime_start_in_sec": 3600,
             "refcst_leadtime_end_in_sec": 7200,

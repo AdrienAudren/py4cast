@@ -1,10 +1,10 @@
 data:
   #args forwarded (linked) to model
   dataset_name: "poesy"
-  num_input_steps: 1
+  num_input_steps: 2
   num_pred_steps_train: 1
   num_pred_steps_val_test: 41
-  batch_size: 4 # per device
+  batch_size: 16 # per device
 
   #other args
   num_workers: 2
@@ -15,6 +15,6 @@ data:
   ensemble_metrics: True
   features_to_plot: ["pearo_t2m_2m", "pearo_tp_0m", "pearo_r2_2m", "pearo_v10_10m", "pearo_t_850hpa", "pearo_z_500hpa"] #["pearo_t_850hpa", "pearo_u_850hpa", "pearo_v_850hpa", "pearo_z_850hpa"] #["pearo_t2m_2m", "pearo_tp_0m", "pearo_u10_10m", "pearo_v10_10m", "pearo_t_850hpa", "pearo_z_500hpa"]
   noise_members: 1
-  noise_strategy: "CondLayerNorm"
+  noise_strategy: "stochastic_EPA"
   # shortcut_length: 1 # Flow matching: {1, 2, ..., 128}
   # dynamical_downscaling: False # dynamically downscale the forcing 
