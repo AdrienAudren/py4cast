@@ -44,7 +44,7 @@ time srun --mpi=pmix \
         ${SINGULARITY_IMAGE} \
         bash -c " \
             pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -e . --no-cache-dir && \
-            python bin/main.py test \
+            python bin/main.py fit \
                 -c config/CLI/trainer.yaml \
                 -c config/CLI/dataset/titan.yaml \
                 -c config/CLI/model/unetrpp.yaml \

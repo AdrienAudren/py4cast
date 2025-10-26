@@ -635,25 +635,6 @@ class AutoRegressiveLightning(LightningModule):
                 
     #     return x, last_smoothed
 
-    def _next_x(
-        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int
-    ) -> torch.Tensor:
-        """
-        Build the next x input for the model at timestep step_idx using the :
-        - previous states
-        - forcing
-        - static features
-        """
-
-        forcing = batch.forcing.select_dim("timestep", step_idx, bare_tensor=False)
-        forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
-
-        x = torch.cat(
-            [self.grid_static_features[: batch.batch_size], forcing_tensor],
-            dim=forcing.dim_index("features"),
-        )
-                
-        return x
     # def _next_x(
     #     self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int
     # ) -> torch.Tensor:
@@ -668,14 +649,33 @@ class AutoRegressiveLightning(LightningModule):
     #     forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
 
     #     x = torch.cat(
-    #         [prev_states.select_dim("timestep", idx)
-    #          for idx in range(batch.num_input_steps)] 
-    #         +
     #         [self.grid_static_features[: batch.batch_size], forcing_tensor],
     #         dim=forcing.dim_index("features"),
     #     )
                 
     #     return x
+    def _next_x(
+        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int
+    ) -> torch.Tensor:
+        """
+        Build the next x input for the model at timestep step_idx using the :
+        - previous states
+        - forcing
+        - static features
+        """
+
+        forcing = batch.forcing.select_dim("timestep", step_idx, bare_tensor=False)
+        forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
+
+        x = torch.cat(
+            [prev_states.select_dim("timestep", idx)
+             for idx in range(batch.num_input_steps)] 
+            +
+            [self.grid_static_features[: batch.batch_size], forcing_tensor],
+            dim=forcing.dim_index("features"),
+        )
+                
+        return x
 
     def _step_diffs(
         self, feature_names: List[str], device: torch.device
@@ -871,22 +871,22 @@ class AutoRegressiveLightning(LightningModule):
                 # We update the latest of our prev_states with the network output
                 if scale_y:
 
-                    # last_prev_state = prev_states.select_dim("timestep", -1)
-                    # if self.noise_strategy in ["CondLayerNorm", "forcing"]:
-                    #     last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
+                    last_prev_state = prev_states.select_dim("timestep", -1)
+                    if self.noise_strategy in ["CondLayerNorm", "forcing"]:
+                        last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
                     # last_prev_state = last_smoothed
                     # if self.noise_strategy in ["CondLayerNorm", "forcing"]:
                     #     last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
 
 
-                    # predicted_state = (
-                    #     # select the last timestep
-                    #     last_prev_state
-                    #     + y * step_diff_std
-                    #     + step_diff_mean
-                    # )
+                    predicted_state = (
+                        # select the last timestep
+                        last_prev_state
+                        + y * step_diff_std
+                        + step_diff_mean
+                    )
 
-                    predicted_state = y
+                    # predicted_state = y
                 else:
                     predicted_state = prev_states.select_dim("timestep", -1) + y
 
@@ -901,27 +901,27 @@ class AutoRegressiveLightning(LightningModule):
                     new_state = predicted_state
 
                 # Only update the prev_states if we are not at the last step
-                # if i < batch.num_pred_steps - 1 or k < num_inter_steps - 1:
-                #     # Update input states for next iteration: drop oldest, append new_state
-                #     timestep_dim_index = batch.inputs.dim_index("timestep")
-                #     new_prev_states_tensor = torch.cat(
-                #         [
-                #             # Drop the oldest timestep (select all but the first)
-                #             prev_states.index_select_dim(
-                #                 "timestep",
-                #                 range(1, prev_states.dim_size("timestep")),
-                #             ),
-                #             # Add the timestep dimension to the new state
-                #             new_state.unsqueeze(timestep_dim_index),
-                #         ],
-                #         dim=timestep_dim_index,
-                #     )
+                if i < batch.num_pred_steps - 1 or k < num_inter_steps - 1:
+                    # Update input states for next iteration: drop oldest, append new_state
+                    timestep_dim_index = batch.inputs.dim_index("timestep")
+                    new_prev_states_tensor = torch.cat(
+                        [
+                            # Drop the oldest timestep (select all but the first)
+                            prev_states.index_select_dim(
+                                "timestep",
+                                range(1, prev_states.dim_size("timestep")),
+                            ),
+                            # Add the timestep dimension to the new state
+                            new_state.unsqueeze(timestep_dim_index),
+                        ],
+                        dim=timestep_dim_index,
+                    )
 
-                #     # Make a new NamedTensor with the same dim and
-                #     # feature names as the original prev_states
-                #     prev_states = NamedTensor.new_like(
-                #         new_prev_states_tensor, prev_states
-                #     )
+                    # Make a new NamedTensor with the same dim and
+                    # feature names as the original prev_states
+                    prev_states = NamedTensor.new_like(
+                        new_prev_states_tensor, prev_states
+                    )
             # Append prediction to prediction list only "normal steps"
             prediction_list.append(new_state)
 
@@ -941,6 +941,7 @@ class AutoRegressiveLightning(LightningModule):
             pred_out = NamedTensor.new_like(
                 prediction.type_as(batch.outputs.tensor), batch.outputs
             )
+            
         return pred_out, batch.outputs # aro_outputs_upsampled_nt
 
     def _common_step_FM_training(
@@ -1453,13 +1454,13 @@ class AutoRegressiveLightning(LightningModule):
             else:
                 prediction, target = self.common_step(batch)
 
-                # select mean of members 
-                prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
-                member = torch.mean(prediction_tensor, dim=1)
-                preds = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
+                # # select mean of members 
+                # prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
+                # member = torch.mean(prediction_tensor, dim=1)
+                # preds = NamedTensor.new_like(member.type_as(prediction.tensor), prediction)
 
                 lowres = None
-                time_step_loss = torch.mean(self.loss(preds, target, epoch=self.current_epoch), dim=0)
+                time_step_loss = torch.mean(self.loss(prediction, target, epoch=self.current_epoch), dim=0)
 
         mean_loss = torch.mean(time_step_loss)
 
@@ -1578,17 +1579,17 @@ class AutoRegressiveLightning(LightningModule):
 
             if self.ensemble_metrics:
                 metrics["std"] = self.spread_metric
-                metrics["bias"] = self.bias_metric
+                # metrics["bias"] = self.bias_metric
 
             self.test_plotters = [
                 StateErrorPlot(metrics, save_path=self.save_path, batch_size=self.batch_size, noise_members=self.noise_members),
-                # SpatialErrorPlot(),
-                # PredictionTimestepPlot(
-                #     num_samples_to_plot=self.num_samples_to_plot,
-                #     num_features_to_plot=6,
-                #     prefix="Test",
-                #     save_path=self.save_path,
-                # )
+                SpatialErrorPlot(),
+                PredictionTimestepPlot(
+                    num_samples_to_plot=self.num_samples_to_plot,
+                    num_features_to_plot=6,
+                    prefix="Test",
+                    save_path=self.save_path,
+                )
             ]
             if self.dynamical_downscaling:
                 self.test_plotters.append(
@@ -1600,34 +1601,34 @@ class AutoRegressiveLightning(LightningModule):
                 )
                 )
 
-            # if self.ensemble_metrics:
-            #     self.test_plotters.append(SpreadTimestepPlot(
-            #         metric=self.spread_map_metric,
-            #         dataset_name = self.dataset_info.name,
-            #         num_samples_to_plot=self.num_samples_to_plot,
-            #         num_features_to_plot=6,
-            #         prefix="Test",
-            #         save_path=self.save_path,
-            #     ))
-            #     self.test_plotters.append(SpreadSkillPlot(
-            #         metric_spread=self.unbVar_metric,
-            #         metric_error=self.skill_metric,
-            #         dataset_name = self.dataset_info.name,
-            #         num_samples_to_plot=93,
-            #         num_features_to_plot=6,
-            #         prefix="Test",
-            #         save_path=self.save_path,
-            #         num_pred_steps_test=self.num_pred_steps_val_test,
-            #     ))
-            #     self.test_plotters.append(CRPSPlot(
-            #         metric=self.crps_metric,
-            #         dataset_name = self.dataset_info.name,
-            #         num_samples_to_plot=93,
-            #         num_features_to_plot=6,
-            #         prefix="Test",
-            #         save_path=self.save_path,
-            #         num_pred_steps_test=self.num_pred_steps_val_test,
-            #     ))
+            if self.ensemble_metrics:
+                self.test_plotters.append(SpreadTimestepPlot(
+                    metric=self.spread_map_metric,
+                    dataset_name = self.dataset_info.name,
+                    num_samples_to_plot=self.num_samples_to_plot,
+                    num_features_to_plot=6,
+                    prefix="Test",
+                    save_path=self.save_path,
+                ))
+                self.test_plotters.append(SpreadSkillPlot(
+                    metric_spread=self.unbVar_metric,
+                    metric_error=self.skill_metric,
+                    dataset_name = self.dataset_info.name,
+                    num_samples_to_plot=1,
+                    num_features_to_plot=6,
+                    prefix="Test",
+                    save_path=self.save_path,
+                    num_pred_steps_test=self.num_pred_steps_val_test,
+                ))
+                self.test_plotters.append(CRPSPlot(
+                    metric=self.crps_metric,
+                    dataset_name = self.dataset_info.name,
+                    num_samples_to_plot=1,
+                    num_features_to_plot=6,
+                    prefix="Test",
+                    save_path=self.save_path,
+                    num_pred_steps_test=self.num_pred_steps_val_test,
+                ))
 
     def test_step(self, batch: ItemBatch, batch_idx):
         """
@@ -1686,12 +1687,12 @@ class AutoRegressiveLightning(LightningModule):
                 else:
                     plotter.update(self, prediction=sliced_prediction, target=sliced_target)
 
-            # self.acc_metric.update(prediction, target)
-            # if self.dynamical_downscaling:
-            #     self.downscale_psd_plot_metric.update(prediction, target, lowres, self.original_shape)
-            # else:
-            #     self.psd_plot_metric.update(prediction, target, self.original_shape)
-            # self.rmse_psd_plot_metric.update(prediction, target, self.original_shape)
+            self.acc_metric.update(prediction, target)
+            if self.dynamical_downscaling:
+                self.downscale_psd_plot_metric.update(prediction, target, lowres, self.original_shape)
+            else:
+                self.psd_plot_metric.update(prediction, target, self.original_shape)
+            self.rmse_psd_plot_metric.update(prediction, target, self.original_shape)
 
     @cached_property
     def interior_2d(self) -> torch.Tensor:

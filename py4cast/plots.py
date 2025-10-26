@@ -157,7 +157,7 @@ def plot_prediction_downscaling(
 
     # Plot pred and target
     for ax, data in zip(axes, (target, lowres, pred)):
-        # ax.coastlines()  # Add coastline outlines
+        ax.coastlines()  # Add coastline outlines
         # data_grid = data.reshape(*grid_shape).cpu().numpy()
         im = ax.imshow(
             data.cpu().numpy(),
@@ -212,7 +212,7 @@ def plot_prediction(
 
     # Plot pred and target
     for ax, data in zip(axes, (target, pred)):
-        # ax.coastlines()  # Add coastline outlines
+        ax.coastlines()  # Add coastline outlines
         # data_grid = data.reshape(*grid_shape).cpu().numpy()
         im = ax.imshow(
             data.cpu().numpy(),
@@ -329,7 +329,7 @@ def plot_spatial_error(
         figsize=(5, 4.8), subplot_kw={"projection": domain_info.projection}
     )
 
-    # ax.coastlines()  # Add coastline outlines
+    ax.coastlines()  # Add coastline outlines
     im = ax.imshow(
         error.cpu().numpy(),
         origin="lower",
@@ -491,13 +491,13 @@ class MapPlot(Plotter):
                     var_vranges,
                 )
 
-                self.plot_diff_map(
-                    obj,
-                    pred_slice,
-                    target_slice,
-                    feature_names,
-                    var_vranges_diff,
-                )
+                # self.plot_diff_map(
+                #     obj,
+                #     pred_slice,
+                #     target_slice,
+                #     feature_names,
+                #     var_vranges_diff,
+                # )
 
     @abstractmethod
     def plot_map(
@@ -510,16 +510,16 @@ class MapPlot(Plotter):
     ) -> None:
         pass
 
-    @abstractmethod
-    def plot_diff_map(
-        self,
-        obj: "AutoRegressiveLightning",
-        prediction: torch.tensor,
-        target: torch.tensor,
-        feature_names: List[str],
-        var_vranges: List,
-    ) -> None:
-        pass
+    # @abstractmethod
+    # def plot_diff_map(
+    #     self,
+    #     obj: "AutoRegressiveLightning",
+    #     prediction: torch.tensor,
+    #     target: torch.tensor,
+    #     feature_names: List[str],
+    #     var_vranges: List,
+    # ) -> None:
+    #     pass
 
     def on_step_end(self, obj: "AutoRegressiveLightning", label: str = "") -> None:
         """
@@ -604,56 +604,56 @@ class PredictionTimestepPlot(MapPlot):
         #             paths, self.save_path / f"timestep_evol_per_param/{var_name}.gif"
         #         )
 
-    def plot_diff_map(
-        self,
-        obj: "AutoRegressiveLightning",
-        prediction: torch.tensor,
-        target: torch.tensor,
-        feature_names: List[str],
-        var_vranges: List,
-    ) -> None:
-        # Prediction and target: (pred_steps, Nlat, Nlon, features)
-        paths_dict = defaultdict(list)
+    # def plot_diff_map(
+    #     self,
+    #     obj: "AutoRegressiveLightning",
+    #     prediction: torch.tensor,
+    #     target: torch.tensor,
+    #     feature_names: List[str],
+    #     var_vranges: List,
+    # ) -> None:
+    #     # Prediction and target: (pred_steps, Nlat, Nlon, features)
+    #     paths_dict = defaultdict(list)
 
-        # Start from t=1 to compute diff with t-1
-        for t_i in range(1, len(prediction)):
-            mae = torch.abs(prediction[t_i] - target[t_i])
+    #     # Start from t=1 to compute diff with t-1
+    #     for t_i in range(1, len(prediction)):
+    #         mae = torch.abs(prediction[t_i] - target[t_i])
 
-            units = [obj.dataset_info.units[name] for name in feature_names]
-            var_figs = [
-                plot_1prediction(
-                    mae[:, :, var_i],
-                    obj.interior_2d[:, :, 0],
-                    title=f"{var_name} ({var_unit}), MAE t={t_i} ({obj.dataset_info.pred_step*t_i} h)",
-                    vrange=var_vrange,
-                    domain_info=obj.dataset_info.domain_info,
-                    cmap="seismic",
-                )
-                for var_i, (var_name, var_unit, var_vrange) in enumerate(
-                    zip(feature_names, units, var_vranges)
-                )
-            ]
+    #         units = [obj.dataset_info.units[name] for name in feature_names]
+    #         var_figs = [
+    #             plot_1prediction(
+    #                 mae[:, :, var_i],
+    #                 obj.interior_2d[:, :, 0],
+    #                 title=f"{var_name} ({var_unit}), MAE t={t_i} ({obj.dataset_info.pred_step*t_i} h)",
+    #                 vrange=var_vrange,
+    #                 domain_info=obj.dataset_info.domain_info,
+    #                 cmap="seismic",
+    #             )
+    #             for var_i, (var_name, var_unit, var_vrange) in enumerate(
+    #                 zip(feature_names, units, var_vranges)
+    #             )
+    #         ]
 
-            tensorboard = obj.logger.experiment
-            for var_name, fig in zip(feature_names, var_figs):
-                fig_name = f"timestep_diff_per_param/{var_name}_example_{self.plotted_examples}"
-                tensorboard.add_figure(fig_name, fig, t_i)
-                fig_full_name = f"{fig_name}_{t_i}.png"
-                if self.save_path is not None and self.save_path.exists():
-                    dest_file = self.save_path / fig_full_name
-                    paths_dict[var_name].append(dest_file)
-                    dest_file.parent.mkdir(exist_ok=True)
-                    fig.savefig(dest_file)
+    #         tensorboard = obj.logger.experiment
+    #         for var_name, fig in zip(feature_names, var_figs):
+    #             fig_name = f"timestep_diff_per_param/{var_name}_example_{self.plotted_examples}"
+    #             tensorboard.add_figure(fig_name, fig, t_i)
+    #             fig_full_name = f"{fig_name}_{t_i}.png"
+    #             if self.save_path is not None and self.save_path.exists():
+    #                 dest_file = self.save_path / fig_full_name
+    #                 paths_dict[var_name].append(dest_file)
+    #                 dest_file.parent.mkdir(exist_ok=True)
+    #                 fig.savefig(dest_file)
 
-                if obj.mlflow_logger:
-                    run_id = obj.mlflow_logger.version
-                    obj.mlflow_logger.experiment.log_figure(
-                        run_id=run_id,
-                        figure=fig,
-                        artifact_file=f"figures/{fig_full_name}",
-                    )
+    #             if obj.mlflow_logger:
+    #                 run_id = obj.mlflow_logger.version
+    #                 obj.mlflow_logger.experiment.log_figure(
+    #                     run_id=run_id,
+    #                     figure=fig,
+    #                     artifact_file=f"figures/{fig_full_name}",
+    #                 )
 
-                plt.close(fig)
+    #             plt.close(fig)
 
 class DownscalingPredictionTimestepPlot(MapPlot):
     """
