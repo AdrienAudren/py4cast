@@ -114,7 +114,6 @@ class PoesyAccessor(DataAccessor):
         """
         # var_file_name = METADATA["WEATHER_PARAMS"][param.name]["file_name"]
         var_file_name = cls.parameter_namer(param)
-        print("var_file_name:", var_file_name)
         if param.kind == "input":
             return (
             SCRATCH_PATH

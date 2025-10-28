@@ -10,7 +10,7 @@ import cartopy
 import einops
 import matplotlib
 import matplotlib.pyplot as plt
-# import seaborn as sns
+import seaborn as sns
 from scipy.stats import wasserstein_distance
 import numpy as np
 import torch
@@ -172,7 +172,7 @@ def plot_prediction_downscaling(
 
     # Plot pred and target
     for ax, data in zip(axes, (target, lowres, pred)):
-        ax.coastlines()  # Add coastline outlines
+        # ax.coastlines()  # Add coastline outlines
         # data_grid = data.reshape(*grid_shape).cpu().numpy()
         im = ax.imshow(
             data.cpu().numpy(),
@@ -228,7 +228,7 @@ def plot_prediction_noise(
 
     # Plot pred and target
     for ax, data in zip(axes, (target, pred, noisyout)):
-        ax.coastlines()  # Add coastline outlines
+        # ax.coastlines()  # Add coastline outlines
         # data_grid = data.reshape(*grid_shape).cpu().numpy()
         im = ax.imshow(
             data.cpu().numpy(),
@@ -283,7 +283,7 @@ def plot_prediction(
 
     # Plot pred and target
     for ax, data in zip(axes, (target, pred)):
-        ax.coastlines()  # Add coastline outlines
+        # ax.coastlines()  # Add coastline outlines
         # data_grid = data.reshape(*grid_shape).cpu().numpy()
         im = ax.imshow(
             data.cpu().numpy(),
@@ -400,7 +400,7 @@ def plot_spatial_error(
         figsize=(5, 4.8), subplot_kw={"projection": domain_info.projection}
     )
 
-    ax.coastlines()  # Add coastline outlines
+    # ax.coastlines()  # Add coastline outlines
     im = ax.imshow(
         error.cpu().numpy(),
         origin="lower",

@@ -1582,7 +1582,7 @@ class AutoRegressiveLightning(LightningModule):
                 # metrics["bias"] = self.bias_metric
 
             self.test_plotters = [
-                StateErrorPlot(metrics, save_path=self.save_path, batch_size=self.batch_size, noise_members=self.noise_members),
+                StateErrorPlot(metrics, save_path=self.save_path),
                 SpatialErrorPlot(),
                 PredictionTimestepPlot(
                     num_samples_to_plot=self.num_samples_to_plot,
@@ -1614,7 +1614,7 @@ class AutoRegressiveLightning(LightningModule):
                     metric_spread=self.unbVar_metric,
                     metric_error=self.skill_metric,
                     dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=1,
+                    num_samples_to_plot=93,
                     num_features_to_plot=6,
                     prefix="Test",
                     save_path=self.save_path,
@@ -1623,7 +1623,7 @@ class AutoRegressiveLightning(LightningModule):
                 self.test_plotters.append(CRPSPlot(
                     metric=self.crps_metric,
                     dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=1,
+                    num_samples_to_plot=93,
                     num_features_to_plot=6,
                     prefix="Test",
                     save_path=self.save_path,

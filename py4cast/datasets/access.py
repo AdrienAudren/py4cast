@@ -120,7 +120,7 @@ class Period:
                     int(self.refcst_leadtime_step_in_sec),
                 )
             ]
-
+        # print(f"Period {self.name}: {len(list_t0)} available t0 and {len(list_leadtimes)} leadtimes.")
         return [(t0, leadtime) for t0 in list_t0 for leadtime in list_leadtimes]
 
     @property

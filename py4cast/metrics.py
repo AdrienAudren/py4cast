@@ -763,7 +763,7 @@ class MetricSquaredSkill(Metric):
         pearo = dim_zero_cat(self.pearo)
         env_path = os.environ["TITAN_PROXY_OBS"]
         target = torch.from_numpy(np.load(f"{env_path}/titan_gt_rescaled_batch_{num_batch}.npy")).to(preds.device)
-        # target = target[1:]
+        target = target[:,1:,...]  # remove time dim 0
         # print(f"target shape: {target.shape}")
         # print(f"preds shape: {preds.shape}")
         # target = target[...,:8]
@@ -870,7 +870,7 @@ class MetricCRPS(Metric):
         target = torch.from_numpy(
             np.load(f"{env_path}/titan_gt_rescaled_batch_{num_batch}.npy")
         ).to(preds.device)
-        # target = target[1:]
+        target = target[:,1:,...]  # remove time dim 0
 
         # Expand target to match preds
         target = target.expand_as(preds)

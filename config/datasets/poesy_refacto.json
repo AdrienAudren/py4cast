@@ -13,7 +13,7 @@
             "end": 20230801,
             "refcst_daily_runs": [75600],
             "refcst_leadtime_start_in_sec": 3600,
-            "refcst_leadtime_end_in_sec": 7200,
+            "refcst_leadtime_end_in_sec": 10800, 
             "refcst_leadtime_step_in_sec": 3600
         },
         "valid": {
