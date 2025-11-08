@@ -1,7 +1,7 @@
 # lightning.pytorch==2.4.0
 seed_everything: true
 
-ckpt_path: "${oc.env:CKPT_DIR}/crps_0order_5em4_2M_2BS/checkpoints/epoch=139-val_mean_loss=3.25.ckpt" #${oc.decode:${oc.env:PATH2CKPT}} #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
+ckpt_path: "${oc.env:CKPT_DIR}/mae2crps_0order_5em4_2M_2BS/checkpoints/epoch=149-val_mean_loss=3.25.ckpt" #${oc.decode:${oc.env:PATH2CKPT}} #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
 
 # optimizer:
 #   class_path: torch.optim.AdamW
@@ -29,8 +29,8 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
       init_args:
         # default_hp_metric: False # see if tensoboard still works before rm TODO
         save_dir:  ${oc.decode:${oc.env:CKPT_DIR}}                     #titan_30varARP/ #       "/py4cast_root_dir/titan_6var/" "/py4cast_root_dir/test_metrics" # Root directory
-        name:         crps_0order_5em4_2M_2BS                   # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
-        version:  test_poesy  # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
+        name:         mae2crps_0order_5em4_2M_2BS                   # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
+        version:  test_poesy_ciaran  # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
     # Your logs will be saved in save_dir/*name*/version/
     # (checkpoints, config.yaml, images, scores, tensorboard logs, ...)
     # Lightning automatically increments the version index of your experiment

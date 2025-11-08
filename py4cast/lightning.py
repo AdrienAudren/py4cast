@@ -942,8 +942,17 @@ class AutoRegressiveLightning(LightningModule):
             pred_out = NamedTensor.new_like(
                 prediction.type_as(batch.outputs.tensor), batch.outputs
             )
-            
-        return pred_out, batch.outputs # aro_outputs_upsampled_nt
+
+        target_tensor = batch.outputs.tensor
+        target_shifted = torch.zeros_like(target_tensor)
+        target_shifted[:, 1:, :, :, 2] = target_tensor[:, :-1, :, :, 2]  # shift everything forward by one step, for precipitation only
+
+        corrected_tensor = target_tensor - target_shifted
+        corrected_target = NamedTensor.new_like(
+            corrected_tensor.type_as(batch.outputs.tensor), batch.outputs
+        )
+
+        return pred_out, corrected_target # batch.outputs # aro_outputs_upsampled_nt
 
     def _common_step_FM_training(
         self, batch: ItemBatch, inference: bool = False
@@ -1615,7 +1624,7 @@ class AutoRegressiveLightning(LightningModule):
                     metric_spread=self.unbVar_metric,
                     metric_error=self.skill_metric,
                     dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=93,
+                    num_samples_to_plot=1,
                     num_features_to_plot=6,
                     prefix="Test",
                     save_path=self.save_path,
@@ -1624,7 +1633,7 @@ class AutoRegressiveLightning(LightningModule):
                 self.test_plotters.append(CRPSPlot(
                     metric=self.crps_metric,
                     dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=93,
+                    num_samples_to_plot=1,
                     num_features_to_plot=6,
                     prefix="Test",
                     save_path=self.save_path,
