@@ -31,7 +31,7 @@ from py4cast.datasets import get_datasets
 from py4cast.datasets.base import DatasetInfo, ItemBatch, NamedTensor, Statics
 from py4cast.io.outputs import GribSavingSettings, save_named_tensors_to_grib
 from py4cast.losses import ScaledLoss, WeightedLoss, MultiScaleLoss
-from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDKdownscaling, MetricPSDVar, MetricSpread, MetricMapSpread, MetricBias, MetricSquaredError, MetricUnbiasedVariance, MetricCRPS
+from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDKdownscaling, MetricPSDKperLeadtimes, MetricPSDVar, MetricSpread, MetricMapSpread, MetricBias, MetricSquaredError, MetricUnbiasedVariance, MetricCRPS
 from py4cast.models import build_model_from_settings, get_model_kls_and_settings
 from py4cast.models import registry as model_registry
 from py4cast.plots import (
@@ -360,8 +360,9 @@ class AutoRegressiveLightning(LightningModule):
             self.save_path = Path(self.trainer.logger.log_dir)
             max_pred_step = self.num_pred_steps_val_test - 1
             self.rmse_psd_plot_metric = MetricPSDVar(pred_step=max_pred_step)
-            self.psd_plot_metric = MetricPSDK(self.save_path, pred_step=max_pred_step)
-            self.downscale_psd_plot_metric = MetricPSDKdownscaling(self.save_path, pred_step=max_pred_step)
+            # self.psd_plot_metric = MetricPSDK(self.save_path, pred_step=max_pred_step)
+            self.psd_plot_metric = MetricPSDKperLeadtimes(self.save_path, pred_step=max_pred_step)
+            # self.downscale_psd_plot_metric = MetricPSDKdownscaling(self.save_path, pred_step=max_pred_step)
             self.acc_metric = MetricACC(self.dataset_info)
             self.spread_metric = MetricSpread(self.dataset_info, pred_step=max_pred_step+1)
             self.spread_map_metric = MetricMapSpread(self.dataset_info, pred_step=max_pred_step+1)
@@ -1666,7 +1667,18 @@ class AutoRegressiveLightning(LightningModule):
             if self.dynamical_downscaling:
                 self.downscale_psd_plot_metric.update(prediction, target, lowres, self.original_shape)
             else:
-                self.psd_plot_metric.update(prediction, target, self.original_shape)
+                # select random member for preds
+                prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
+                member_tensor = prediction_tensor[:, torch.randint(0, self.noise_members, (1,)).item()]
+                member = NamedTensor.new_like(member_tensor.type_as(prediction.tensor), prediction)
+
+                # select mean of members 
+                prediction_tensor = prediction.tensor.reshape(self.batch_size, self.noise_members, *prediction.tensor.shape[1:])
+                mean_tensor = torch.mean(prediction_tensor, dim=1)
+                mean = NamedTensor.new_like(mean_tensor.type_as(prediction.tensor), prediction)
+
+                self.psd_plot_metric.update(mean, member, target, self.original_shape)
+                
             self.rmse_psd_plot_metric.update(prediction, target, self.original_shape)
 
     @cached_property

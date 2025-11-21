@@ -247,6 +247,129 @@ class MetricPSDKdownscaling(MetricPSDK):
         return dict_psd_metric
 
 
+class MetricPSDKperLeadtimes(Metric):
+    """
+    Compute PSD across all prediction steps from 1..pred_step+1.
+    Saves PSDs for all steps, but only returns dict for last step.
+    """
+
+    def __init__(self, save_path: Path, pred_step: int = 0):
+        super().__init__()
+        self.save_path = save_path
+        self.pred_step = pred_step
+
+        # Now it's a tensor placeholder, no lists/None
+        self.add_state("sum_psd_mean", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("sum_psd_member", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("sum_psd_target", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("step_count", default=torch.tensor(0.0), dist_reduce_fx="sum")
+
+    def update(self, mean: NamedTensor, member: NamedTensor, targets: NamedTensor, shape: tuple):
+        if mean.tensor.shape != targets.tensor.shape:
+            raise ValueError("mean and targets must have the same shape")
+
+        if shape is not None:
+            mean.unflatten_(2, shape[2:4], ["Lon", "Lat"])
+            member.unflatten_(2, shape[2:4], ["Lon", "Lat"])
+            targets.unflatten_(2, shape[2:4], ["Lon", "Lat"])
+
+        if self.step_count == 0:
+            self.feature_names = mean.feature_names
+
+        # Compute PSDs for all steps
+        psd_mean_all = self.compute_all_psd(mean.tensor)
+        psd_member_all = self.compute_all_psd(member.tensor)
+        psd_target_all = self.compute_all_psd(targets.tensor)
+
+
+        # Initialize storage on first call
+        if self.sum_psd_mean.ndim == 0:  
+            self.sum_psd_mean = torch.zeros_like(psd_mean_all, device=self.device)
+            self.sum_psd_member = torch.zeros_like(psd_member_all, device=self.device)
+            self.sum_psd_target = torch.zeros_like(psd_target_all, device=self.device)
+
+        self.sum_psd_mean += psd_mean_all
+        self.sum_psd_member += psd_member_all
+        self.sum_psd_target += psd_target_all
+
+        self.step_count += 1
+
+        if shape is not None:
+            mean.flatten_("ngrid", 2, 3)
+            member.flatten_("ngrid", 2, 3)
+            targets.flatten_("ngrid", 2, 3)
+
+    def compute_all_psd(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute PSD for all steps at once.
+        Returns shape: (steps, channels, wave_number)
+        """
+        # Reorder to: (Batch, Channels, Lon, Lat, Steps)
+        x = x.permute(0, -1, *range(2, x.dim() - 1), 1)
+        steps = x.shape[-1]
+        channels = x.shape[1]
+
+        psds = []
+        for t in range(steps):
+            psd_list = []
+            for c in range(channels):
+                psd = power_spectral_density(
+                    x[:, c : c + 1, :, :, t].cpu().numpy()
+                ).squeeze()
+                psd_list.append(torch.from_numpy(psd).to(device=self.device))
+            psds.append(torch.stack(psd_list, dim=0))  # (channels, wave_number)
+
+        return torch.stack(psds, dim=0)  # (steps, channels, wave_number)
+
+    def compute(self, prefix: str = "val") -> dict:
+        dict_psd_metric = {}
+
+        # mean over batches
+        mean_psd_mean = self.sum_psd_mean / self.step_count
+        mean_psd_member = self.sum_psd_member / self.step_count
+        mean_psd_target = self.sum_psd_target / self.step_count
+        
+        features_name = self.feature_names
+        steps, channels, Rmax = mean_psd_mean.shape
+        k = np.linspace(2 * np.pi / 2.6, Rmax * 2 * np.pi / 2.6, Rmax)
+
+        # Save PSDs for ALL steps
+        for t in range(steps):
+            for c in range(channels):
+                np.save(
+                    self.save_path / f"{prefix}_mean_psd_k_{features_name[c]}_{t+1}.npy",
+                    np.array([
+                        k,
+                        mean_psd_mean[t, c].cpu().numpy(),
+                        mean_psd_member[t, c].cpu().numpy(),
+                        mean_psd_target[t, c].cpu().numpy(),
+                    ])
+                )
+
+        # Only log/plot last step
+        last_step = steps - 1
+        for c in range(channels):
+            fig = plot_log_psd_perLeadtimes(
+                k,
+                mean_psd_mean[last_step, c].cpu().numpy(),
+                mean_psd_member[last_step, c].cpu().numpy(),
+                mean_psd_target[last_step, c].cpu().numpy(),
+                f"PSD for {features_name[c]} at +{last_step+1}h",
+            )
+            dict_psd_metric[f"{prefix}_mean_psd_k/{features_name[c]}"] = fig
+
+            dest_file = (
+                self.save_path
+                / f"{prefix}_mean_psd_k/{features_name[c]}_{last_step+1}.png"
+            )
+            if self.save_path.exists():
+                dest_file.parent.mkdir(exist_ok=True)
+                fig.savefig(dest_file)
+
+        self.reset()
+        return dict_psd_metric
+
+
 class MetricPSDVar(Metric):
     """
     Compute the RMSE between the target and the prediciton PSD for each channels/features.
