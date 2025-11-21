@@ -31,17 +31,14 @@ from py4cast.datasets import get_datasets
 from py4cast.datasets.base import DatasetInfo, ItemBatch, NamedTensor, Statics
 from py4cast.io.outputs import GribSavingSettings, save_named_tensors_to_grib
 from py4cast.losses import ScaledLoss, WeightedLoss, MultiScaleLoss
-from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDKdownscaling, MetricPSDVar, MetricSpread, MetricMapSpread, MetricBias, MetricSquaredSkill, MetricUnbiasedVariance, MetricCRPS
+from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDKdownscaling, MetricPSDVar, MetricSpread, MetricMapSpread, MetricBias, MetricSquaredError, MetricUnbiasedVariance, MetricCRPS
 from py4cast.models import build_model_from_settings, get_model_kls_and_settings
 from py4cast.models import registry as model_registry
 from py4cast.plots import (
     PredictionEpochPlot,
     PredictionTimestepPlot,
-    DownscalingPredictionTimestepPlot,
-    DownscalingPredictionEpochPlot,
     SpreadTimestepPlot,
-    SpreadSkillPlot,
-    CRPSPlot,
+    EnScorePlot,
     SpatialErrorPlot,
     StateErrorPlot,
 )
@@ -369,7 +366,7 @@ class AutoRegressiveLightning(LightningModule):
             self.spread_metric = MetricSpread(self.dataset_info, pred_step=max_pred_step+1)
             self.spread_map_metric = MetricMapSpread(self.dataset_info, pred_step=max_pred_step+1)
             self.bias_metric = MetricBias(self.dataset_info, pred_step=max_pred_step+1)
-            self.skill_metric = MetricSquaredSkill(self.dataset_info, pred_step=max_pred_step+1)
+            self.error_metric = MetricSquaredError(self.dataset_info, pred_step=max_pred_step+1)
             self.unbVar_metric = MetricUnbiasedVariance(self.dataset_info, pred_step=max_pred_step+1)
             self.crps_metric = MetricCRPS(self.dataset_info, pred_step=max_pred_step+1)
             self.configure_loggers()
@@ -845,7 +842,7 @@ class AutoRegressiveLightning(LightningModule):
                 x = self._next_x(batch, prev_states, i) 
                 if self.noise_strategy == "CondLayerNorm":
                     # generate (32,) noise vectors for stochastic conditional layer normalization
-                    # Skillful joint probabilistic weather forecasting from marginals: https://arxiv.org/pdf/2506.10772
+                    # errorful joint probabilistic weather forecasting from marginals: https://arxiv.org/pdf/2506.10772
                     epsilon = torch.randn(self.batch_size*self.noise_members, 32, device=prev_states.device)
 
                 # Graph (B, N_grid, d_f) or Conv (B, N_lat,N_lon d_f)
@@ -1420,36 +1417,21 @@ class AutoRegressiveLightning(LightningModule):
             l1_loss = ScaledLoss("L1Loss", reduction="none")
             l1_loss.prepare(self, self.interior_mask, self.dataset_info)
             metrics = {"mae": l1_loss}
-            if self.dynamical_downscaling:
-                self.valid_plotters = [
-                    DownscalingPredictionTimestepPlot(
+
+            self.valid_plotters = [
+                PredictionTimestepPlot(
                     num_samples_to_plot=1,
                     num_features_to_plot=8,
                     prefix="Validation",
                     save_path=self.save_path,
                 ),
-                    DownscalingPredictionEpochPlot(
-                        num_samples_to_plot=1,
-                        num_features_to_plot=8,
-                        prefix="Validation",
-                        save_path=self.save_path,
-                    ),
-                ]
-            else:
-                self.valid_plotters = [
-                    PredictionTimestepPlot(
-                        num_samples_to_plot=1,
-                        num_features_to_plot=8,
-                        prefix="Validation",
-                        save_path=self.save_path,
-                    ),
-                    PredictionEpochPlot(
-                        num_samples_to_plot=1,
-                        num_features_to_plot=8,
-                        prefix="Validation",
-                        save_path=self.save_path,
-                    ),
-                ]
+                PredictionEpochPlot(
+                    num_samples_to_plot=1,
+                    num_features_to_plot=8,
+                    prefix="Validation",
+                    save_path=self.save_path,
+                ),
+            ]
 
     def _shared_val_test_step(self, batch: ItemBatch, batch_idx, label: str):
         with torch.no_grad():
@@ -1589,7 +1571,6 @@ class AutoRegressiveLightning(LightningModule):
 
             if self.ensemble_metrics:
                 metrics["std"] = self.spread_metric
-                # metrics["bias"] = self.bias_metric
 
             self.test_plotters = [
                 StateErrorPlot(metrics, save_path=self.save_path),
@@ -1601,15 +1582,6 @@ class AutoRegressiveLightning(LightningModule):
                     save_path=self.save_path,
                 )
             ]
-            if self.dynamical_downscaling:
-                self.test_plotters.append(
-                    DownscalingPredictionTimestepPlot(
-                    num_samples_to_plot=self.num_samples_to_plot,
-                    num_features_to_plot=6,
-                    prefix="Test",
-                    save_path=self.save_path,
-                )
-                )
 
             if self.ensemble_metrics:
                 self.test_plotters.append(SpreadTimestepPlot(
@@ -1620,18 +1592,11 @@ class AutoRegressiveLightning(LightningModule):
                     prefix="Test",
                     save_path=self.save_path,
                 ))
-                self.test_plotters.append(SpreadSkillPlot(
-                    metric_spread=self.unbVar_metric,
-                    metric_error=self.skill_metric,
-                    dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=93,
-                    num_features_to_plot=6,
-                    prefix="Test",
-                    save_path=self.save_path,
-                    num_pred_steps_test=self.num_pred_steps_val_test,
-                ))
-                self.test_plotters.append(CRPSPlot(
-                    metric=self.crps_metric,
+                self.test_plotters.append(EnScorePlot(
+                    bias_metric=self.bias_metric,
+                    error_metric=self.error_metric,
+                    unbVar_metric=self.unbVar_metric,
+                    crps_metric=self.crps_metric,
                     dataset_name = self.dataset_info.name,
                     num_samples_to_plot=93,
                     num_features_to_plot=6,

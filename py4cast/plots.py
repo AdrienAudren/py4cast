@@ -1,10 +1,10 @@
 import json
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from copy import deepcopy
+from copy import deepcopy, error
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Tuple, Union, Literal
 
 import cartopy
 import einops
@@ -124,21 +124,6 @@ def plot_log_psd_downscaling(
     plt.close()
     return fig
 
-def plot_log_psd_noise(
-    k: np.ndarray, psd_pred: np.ndarray,  psd_target: np.ndarray, psd_noisyout: np.ndarray, title: str = ""
-):
-    fig, ax = plt.subplots(figsize=(15, 10))
-    ax.plot(k, psd_pred, label="A-R 1-order pred")
-    ax.plot(k, psd_target, label="AROME")
-    ax.plot(k, psd_noisyout, label="Smoothed (linear in t) AROME")
-    ax.set_xlabel("k")
-    ax.set_ylabel("psd_k")
-    ax.legend()
-    ax.set_title(title)
-    plt.yscale("log")
-    plt.close()
-    return fig
-
 
 @matplotlib.rc_context(fractional_plot_bundle(1))
 def plot_prediction_downscaling(
@@ -188,62 +173,6 @@ def plot_prediction_downscaling(
     axes[0].set_title("AROME", size=15)
     axes[1].set_title("ARPEGE", size=15)
     axes[2].set_title("8 steps Flow Matching", size=15)
-    cbar = fig.colorbar(im, aspect=30)
-    cbar.ax.tick_params(labelsize=10)
-
-    if title:
-        fig.suptitle(title, size=20)
-
-    return fig
-
-@matplotlib.rc_context(fractional_plot_bundle(1))
-def plot_prediction_noise(
-    pred,
-    target,
-    noisyout,
-    interior_mask,
-    domain_info: DomainInfo,
-    title=None,
-    vrange=None,
-    cmap="plasma",
-):
-    """
-    Plot example prediction and grond truth.
-    Each has shape (N_grid,)
-    """
-    # Get common scale for values
-    if vrange is None:
-        vmin = min(vals.min().cpu().item() for vals in (pred, target))
-        vmax = max(vals.max().cpu().item() for vals in (pred, target))
-    else:
-        vmin, vmax = vrange
-
-    # Set up masking of border region
-    # mask_reshaped = obs_mask.reshape(*grid_shape)
-    pixel_alpha = interior_mask.clamp(0.7, 1).cpu().numpy()  # Faded border region
-
-    fig, axes = plt.subplots(
-        1, 3, figsize=(19, 7), subplot_kw={"projection": domain_info.projection}
-    )
-
-    # Plot pred and target
-    for ax, data in zip(axes, (target, pred, noisyout)):
-        # ax.coastlines()  # Add coastline outlines
-        # data_grid = data.reshape(*grid_shape).cpu().numpy()
-        im = ax.imshow(
-            data.cpu().numpy(),
-            origin="lower",
-            extent=domain_info.grid_limits,
-            alpha=pixel_alpha,
-            vmin=vmin,
-            vmax=vmax,
-            cmap=cmap,
-        )
-
-    # Ticks and labels
-    axes[0].set_title("AROME", size=15)
-    axes[1].set_title("A-R 1-order pred", size=15)
-    axes[2].set_title("Smoothed (linear in t) AROME", size=15)
     cbar = fig.colorbar(im, aspect=30)
     cbar.ax.tick_params(labelsize=10)
 
@@ -521,11 +450,6 @@ class MapPlot(Plotter):
                 if self.save_path is not None:  
                     np.save(self.save_path / "std.npy", std.cpu().numpy())
                     np.save(self.save_path / "mean.npy", mean.cpu().numpy())
-
-            ###########################################################################################################
-            # np.save(f"/gt_titan/titan_gt_rescaled_batch_{self.count}.npy", target_rescaled.cpu().numpy())
-            # self.count += 1
-            ###########################################################################################################
             
             # Iterate over the examples
             # We assume examples are already on grid
@@ -594,19 +518,6 @@ class MapPlot(Plotter):
         Do an action when "end" is trigger
         """
         pass
-
-
-def make_gif(paths: List[Path], dest: Path):
-    frames = [Image.open(path) for path in paths]
-    frame_one = frames[0]
-    frame_one.save(
-        dest,
-        format="GIF",
-        append_images=frames[1:],
-        save_all=True,
-        duration=500,
-        loop=0,
-    )
     
 
 
@@ -723,115 +634,6 @@ class PredictionTimestepPlot(MapPlot):
 
                 plt.close(fig)
 
-class DownscalingPredictionTimestepPlot(MapPlot):
-    """
-    Observer used to plot prediction and target for each timestep.
-    """
-    def __init__(
-        self,
-        num_samples_to_plot: int = 1,
-        num_features_to_plot: Union[None, int] = None,
-        prefix: str = "Test",
-        save_path: Path = None,
-    ):
-        super().__init__(
-            num_samples_to_plot=num_samples_to_plot,
-            num_features_to_plot=num_features_to_plot,
-            prefix=prefix,
-            save_path=save_path,
-        )
-        self.requires_lowres: bool = True  # This observer requires lowres data
-
-    def update(
-        self,
-        obj: "AutoRegressiveLightning",
-        prediction: NamedTensor,
-        target: NamedTensor,
-        lowres: NamedTensor,
-    ) -> None:
-        """
-        Update. Should be call by "on_{training/validation/test}_step
-        """
-        pred = deepcopy(prediction).tensor  # In order to not modify the input
-        targ = deepcopy(target).tensor  # In order to not modify the input
-        lowres = deepcopy(lowres).tensor  # In order to not modify the input
-        # Here we reshape output from GNNS to be on the grid
-        if prediction.num_spatial_dims == 1:
-            pred = einops.rearrange(
-                pred, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
-            )
-            targ = einops.rearrange(
-                targ, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
-            )
-            lowres = einops.rearrange(
-                lowres, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
-            )
-
-        if (
-            obj.trainer.is_global_zero
-            # and self.plotted_examples < self.num_samples_to_plot
-        ):
-            # Need to plot more example predictions
-            n_additional_examples = min(
-                pred.shape[0], self.num_samples_to_plot - self.plotted_examples
-            )
-            # Rescale to original data scale
-            if obj.noise_strategy == "ddim":
-                # unnormalized [-1,1]
-                max_stat = obj.stats.to_list("max", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                min_stat = obj.stats.to_list("min", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                prediction_rescaled = (pred + 1)*(max_stat - min_stat) / 2 + min_stat
-                target_rescaled = (targ + 1)*(max_stat - min_stat) / 2 + min_stat
-                lowres_rescaled = (lowres + 1)*(max_stat - min_stat) / 2 + min_stat
-            else:
-                std = obj.stats.to_list("std", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                mean = obj.stats.to_list("mean", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                prediction_rescaled = pred * std + mean
-                target_rescaled = targ * std + mean
-                lowres_rescaled = lowres * std + mean
-
-                # save in numpy file std and mean
-                if self.save_path is not None:  
-                    np.save(self.save_path / "std.npy", std.cpu().numpy())
-                    np.save(self.save_path / "mean.npy", mean.cpu().numpy())
-            
-            # Iterate over the examples
-            # We assume examples are already on grid
-            for pred_slice, target_slice, lowres_slice in zip(
-                prediction_rescaled[:n_additional_examples],
-                target_rescaled[:n_additional_examples],
-                lowres_rescaled[:n_additional_examples],
-            ):
-                # Each slice is (pred_steps, Nlat, Nlon, features)
-                self.plotted_examples += 1  # Increment already here
-
-                var_vmin = target_slice.flatten(0, 2).min(dim=0)[0].cpu().numpy()
-                var_vmax = target_slice.flatten(0, 2).max(dim=0)[0].cpu().numpy()
-                var_vranges = list(zip(var_vmin, var_vmax))
-
-                feature_names = (
-                    prediction.feature_names[: self.num_features_to_plot]
-                    if self.num_features_to_plot
-                    else prediction.feature_names
-                )
-
-                self.plot_map(
-                    obj,
-                    pred_slice,
-                    target_slice,
-                    lowres_slice,
-                    feature_names,
-                    var_vranges,
-                )
-
     def plot_map(
         self,
         obj: "AutoRegressiveLightning",
@@ -884,121 +686,6 @@ class DownscalingPredictionTimestepPlot(MapPlot):
                     )
 
                 plt.close(fig)
-
-        # for var_name, paths in paths_dict.items():
-        #     if len(paths) > 1:
-        #         make_gif(
-        #             paths, self.save_path / f"timestep_evol_per_param/{var_name}.gif"
-        #         )
-
-class NoisePredictionTimestepPlot(MapPlot):
-    """
-    Observer used to plot prediction and target for each timestep.
-    """
-    def __init__(
-        self,
-        num_samples_to_plot: int = 1,
-        num_features_to_plot: Union[None, int] = None,
-        prefix: str = "Test",
-        save_path: Path = None,
-    ):
-        super().__init__(
-            num_samples_to_plot=num_samples_to_plot,
-            num_features_to_plot=num_features_to_plot,
-            prefix=prefix,
-            save_path=save_path,
-        )
-        self.requires_noisyout: bool = True  # This observer requires lowres data
-
-    def update(
-        self,
-        obj: "AutoRegressiveLightning",
-        prediction: NamedTensor,
-        target: NamedTensor,
-        noisyout: NamedTensor,
-    ) -> None:
-        """
-        Update. Should be call by "on_{training/validation/test}_step
-        """
-        pred = deepcopy(prediction).tensor  # In order to not modify the input
-        targ = deepcopy(target).tensor  # In order to not modify the input
-        noisyout = deepcopy(noisyout).tensor  # In order to not modify the input
-        # Here we reshape output from GNNS to be on the grid
-        if prediction.num_spatial_dims == 1:
-            pred = einops.rearrange(
-                pred, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
-            )
-            targ = einops.rearrange(
-                targ, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
-            )
-            noisyout = einops.rearrange(
-                noisyout, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
-            )
-
-        if (
-            obj.trainer.is_global_zero
-            # and self.plotted_examples < self.num_samples_to_plot
-        ):
-            # Need to plot more example predictions
-            n_additional_examples = min(
-                pred.shape[0], self.num_samples_to_plot - self.plotted_examples
-            )
-            # Rescale to original data scale
-            if obj.noise_strategy == "ddim":
-                # unnormalized [-1,1]
-                max_stat = obj.stats.to_list("max", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                min_stat = obj.stats.to_list("min", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                prediction_rescaled = (pred + 1)*(max_stat - min_stat) / 2 + min_stat
-                target_rescaled = (targ + 1)*(max_stat - min_stat) / 2 + min_stat
-                noisyout_rescaled = (noisyout + 1)*(max_stat - min_stat) / 2 + min_stat
-            else:
-                std = obj.stats.to_list("std", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                mean = obj.stats.to_list("mean", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                prediction_rescaled = pred * std + mean
-                target_rescaled = targ * std + mean
-                noisyout_rescaled = noisyout * std + mean
-
-                # save in numpy file std and mean
-                if self.save_path is not None:  
-                    np.save(self.save_path / "std.npy", std.cpu().numpy())
-                    np.save(self.save_path / "mean.npy", mean.cpu().numpy())
-            
-            # Iterate over the examples
-            # We assume examples are already on grid
-            for pred_slice, target_slice, noisyout_slice in zip(
-                prediction_rescaled[:n_additional_examples],
-                target_rescaled[:n_additional_examples],
-                noisyout_rescaled[:n_additional_examples],
-            ):
-                # Each slice is (pred_steps, Nlat, Nlon, features)
-                self.plotted_examples += 1  # Increment already here
-
-                var_vmin = target_slice.flatten(0, 2).min(dim=0)[0].cpu().numpy()
-                var_vmax = target_slice.flatten(0, 2).max(dim=0)[0].cpu().numpy()
-                var_vranges = list(zip(var_vmin, var_vmax))
-
-                feature_names = (
-                    prediction.feature_names[: self.num_features_to_plot]
-                    if self.num_features_to_plot
-                    else prediction.feature_names
-                )
-
-                self.plot_map(
-                    obj,
-                    pred_slice,
-                    target_slice,
-                    noisyout_slice,
-                    feature_names,
-                    var_vranges,
-                )
 
     def plot_map(
         self,
@@ -1218,13 +905,6 @@ class SpreadTimestepPlot(MapPlot):
 
                 plt.close(fig)
 
-        # for var_name, paths in paths_dict.items():
-        #     if len(paths) > 1:
-        #         make_gif(
-        #             paths, self.save_path / f"timestep_spread_evol_per_param/{var_name}.gif"
-        #         )
-
-
     def plot_std_diff_map(
         self,
         obj: "AutoRegressiveLightning",
@@ -1278,333 +958,18 @@ class SpreadTimestepPlot(MapPlot):
 
                 plt.close(fig)
 
-        for var_name, paths in paths_dict.items():
-            if len(paths) > 1:
-                make_gif(
-                    paths, self.save_path / f"timestep_spread_diff_per_param/{var_name}.gif"
-                )
-
-class SpreadSkillPlot(MapPlot):
-    """
-    Observer used to plot Spread Skill plot binned by std and Spread Error Ratio.
-    """
-    def __init__(
-        self,
-        metric_spread: Metric,
-        metric_error: Metric,
-        dataset_name: str,
-        num_samples_to_plot: int,
-        num_features_to_plot: Union[None, int] = None,
-        prefix: str = "Test",
-        save_path: Path = None,
-        num_pred_steps_test: int = None,
-    ):
-        super().__init__(
-            num_samples_to_plot=num_samples_to_plot,
-            num_features_to_plot=num_features_to_plot,
-            prefix=prefix,
-            save_path=save_path,
-        )
-        self.metric_spread = metric_spread
-        self.metric_error = metric_error
-        self.dataset_name = dataset_name
-
-        self.LT_start = [0, 10, 20]
-        self.LT_end = [10, 20, num_pred_steps_test]
-        self.num_bins = 20
-
-        self.mean_spread_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
-        self.mean_skill_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
-        self.mean_spread_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
-        self.mean_skill_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
-   
-
-    def update(
-        self,
-        obj: "AutoRegressiveLightning",
-        prediction: NamedTensor,
-        target: NamedTensor,
-        
-    ) -> None:
-        """
-        Update. Should be call by "on_{training/validation/test}_step
-        """
-        pred = prediction.clone().tensor  # In order to not modify the input
-        targ = target.clone().tensor  # In order to not modify the input
-
-        feature_names = (
-                prediction.feature_names[: self.num_features_to_plot]
-                if self.num_features_to_plot
-                else prediction.feature_names
-            )
-
-        # Here we reshape output from GNNS to be on the grid
-        if prediction.num_spatial_dims == 1:
-            prediction.tensor = einops.rearrange(
-                prediction.tensor, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
-            )
-            target.tensor = einops.rearrange(
-                target.tensor, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
-            )
-
-        if self.plotted_examples < self.num_samples_to_plot:
-             
-            # Rescale to original data scale
-            if obj.noise_strategy == "ddim":
-                # unnormalized [-1,1]
-                max_stat = obj.stats.to_list("max", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                min_stat = obj.stats.to_list("min", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                prediction_rescaled = (pred + 1)*(max_stat - min_stat) / 2 + min_stat
-                target_rescaled = (targ + 1)*(max_stat - min_stat) / 2 + min_stat
-            else:
-                std = obj.stats.to_list("std", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                mean = obj.stats.to_list("mean", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                prediction_rescaled = pred * std + mean
-                target_rescaled = targ * std + mean
-
-            self.metric_spread.update(prediction_rescaled, target_rescaled)
-            std_dict = self.metric_spread.compute(prefix="test")
-            
-            self.metric_error.update(prediction_rescaled, target_rescaled)
-            skill_dict = self.metric_error.compute(num_batch=self.plotted_examples, prefix="test")
-            
-
-        if obj.trainer.is_global_zero:
-
-            self.mean_spread_pred[self.plotted_examples] = std_dict["preds"].cpu().numpy()
-            self.mean_spread_pearo[self.plotted_examples] = std_dict["pearo"].cpu().numpy()
-
-            self.mean_skill_pred[self.plotted_examples] = skill_dict["preds"].cpu().numpy()
-            self.mean_skill_pearo[self.plotted_examples] = skill_dict["pearo"].cpu().numpy()
-
-        self.plotted_examples += 1
-
-        if self.plotted_examples == self.num_samples_to_plot: # end of epoch
-
-            if obj.trainer.is_global_zero:
-
-                # Average numpy arrays over all examples
-                mean_spread_pearo = np.sqrt(np.mean(self.mean_spread_pearo[:self.plotted_examples], axis=0)) # shape (LT, self.num_features_to_plot)
-                mean_rmse_pearo = np.sqrt(np.mean(self.mean_skill_pearo[:self.plotted_examples], axis=0))
-                mean_spread_pred = np.sqrt(np.mean(self.mean_spread_pred[:self.plotted_examples], axis=0))
-                mean_rmse_pred = np.sqrt(np.mean(self.mean_skill_pred[:self.plotted_examples], axis=0))
-
-                ssp_pearo =  np.sqrt(17/16)*np.divide(mean_spread_pearo, mean_rmse_pearo) # shape (LT, self.num_features_to_plot)
-                ssp_pred = np.sqrt(17/16)*np.divide(mean_spread_pred, mean_rmse_pred)
-
-                # Plot figs only on main process
-                self.plot_map(
-                    obj,
-                    mean_spread_pearo,
-                    mean_rmse_pearo,
-                    mean_spread_pred,
-                    mean_rmse_pred,
-                    feature_names,
-                )
-
-                self.plot_RSE(
-                    obj,
-                    ssp_pearo,
-                    ssp_pred,
-                    feature_names,
-                )
-
-    def bin_and_average_flat(self, spread_flat, rmse_flat, bins):
-        """
-        Bin the pixel-wise spread and compute the average spread and RMSE for each bin.
-        """
-        bin_indices = np.digitize(spread_flat, bins)
-        mean_spread = []
-        mean_rmse = []
-
-        for b in range(1, len(bins)):
-            bin_mask = bin_indices == b
-            if np.any(bin_mask):  # Ensure the bin is not empty
-                mean_spread.append(np.mean(spread_flat[bin_mask]))
-                mean_rmse.append(np.mean(rmse_flat[bin_mask]))
-
-        return np.array(mean_spread), np.array(mean_rmse) 
-
-    def plot_map(
-        self,
-        obj: "AutoRegressiveLightning",
-        mean_spread_pearo: np.ndarray,
-        mean_rmse_pearo: np.ndarray,
-        mean_spread_pred: np.ndarray,
-        mean_rmse_pred: np.ndarray,
-        feature_names: List[str],
-    ) -> None:
-        # Prediction and target: (pred_steps, features)
-        # Iterate over variables
-        paths_dict = defaultdict(list)
-
-        units = [obj.dataset_info.units[name] for name in feature_names]
-        var_figs = []
-        purple_shades = ["#4b0082", "#9933cc", "#e0b3ff"]  # Light, Medium, Dark purple
-        green_shades = ["#006633", "#33cc66", "#b3ffcc"]  # Light, Medium, Dark green
-
-        for var_i, (var_name, var_unit) in enumerate(
-                zip(feature_names, units)
-            ):
-
-            plt.figure(figsize=(10, 6))
-
-            for curve in range(len(self.LT_start)):
-
-                spread_flat = mean_spread_pearo[self.LT_start[curve]:self.LT_end[curve], var_i].flatten()
-                skill_flat = mean_rmse_pearo[self.LT_start[curve]:self.LT_end[curve], var_i].flatten()
-
-                bins = np.linspace(spread_flat.min(), 
-                                        spread_flat.max(), 
-                                        self.num_bins + 1)
-
-                mean_spread, mean_rmse = self.bin_and_average_flat(spread_flat, skill_flat, bins)
-
-                # Plot spread-RMSE relationship for both models
-                plt.plot(mean_spread, mean_rmse, marker="x", label="pearo "+var_name+" LT "+str(self.LT_start[curve])+"-"+str(self.LT_end[curve]), color=green_shades[curve])
-                np.save(self.save_path / f"pearo_spread_skill_plot_per_param_{var_name}_LT_{self.LT_start[curve]}-{self.LT_end[curve]}.npy", np.array([mean_spread, mean_rmse]))
-                
-
-                spread_flat = mean_spread_pred[self.LT_start[curve]:self.LT_end[curve], var_i].flatten()
-                skill_flat = mean_rmse_pred[self.LT_start[curve]:self.LT_end[curve], var_i].flatten()
-
-                bins = np.linspace(spread_flat.min(), 
-                                        spread_flat.max(), 
-                                        self.num_bins + 1)
-
-                mean_spread, mean_rmse = self.bin_and_average_flat(spread_flat, skill_flat, bins)
-
-                # Plot spread-RMSE relationship for both models
-                plt.plot(mean_spread, mean_rmse, marker="x", label="preds "+var_name+" LT "+str(self.LT_start[curve])+"-"+str(self.LT_end[curve]), color=purple_shades[curve])
-                np.save(self.save_path / f"preds_spread_skill_plot_per_param_{var_name}_LT_{self.LT_start[curve]}-{self.LT_end[curve]}.npy", np.array([mean_spread, mean_rmse,]))
-
-            # Add perfect line y=x
-            max_value = max(np.max(mean_spread),np.max(mean_spread),np.max(mean_rmse),
-                            np.max(mean_rmse))
-
-            plt.plot([0, max_value], [0, max_value], linestyle="--", color="gray", label="Perfect")
-
-            plt.xlabel("Spread (Standard Deviation of the ensmeble)")
-            plt.ylabel("Skill (RMSE of the ensmble mean)")
-            plt.title(var_name+" Spread-Skill Plot")
-            plt.grid(True, linestyle="--", alpha=0.6)
-            plt.legend()
-
-            # add figure to var_figs
-            var_figs.append(plt.gcf())
-
-        # TODO : don't create all figs at once to avoid matplotlib warning
-        tensorboard = obj.logger.experiment
-        for var_name, fig in zip(feature_names, var_figs):
-            fig_name = f"spread_skill_plot_per_param/{var_name}"
-            tensorboard.add_figure(fig_name, fig)
-            fig_full_name = f"{fig_name}.png"
-            if self.save_path is not None and self.save_path.exists():
-                dest_file = self.save_path / fig_full_name
-                paths_dict[var_name].append(dest_file)
-                dest_file.parent.mkdir(exist_ok=True)
-                fig.savefig(dest_file)
-
-            if obj.mlflow_logger:
-                run_id = obj.mlflow_logger.version
-                obj.mlflow_logger.experiment.log_figure(
-                    run_id=run_id,
-                    figure=fig,
-                    artifact_file=f"figures/{fig_full_name}",
-                )
-
-            plt.close(fig)
-
-    def plot_RSE(
-        self,
-        obj: "AutoRegressiveLightning",
-        mean_ratio_pearo: np.ndarray,
-        mean_ratio_pred: np.ndarray,
-        feature_names: List[str],
-    ) -> None:
-        # Prediction and target: (pred_steps, features)
-        # Iterate over variables
-        paths_dict = defaultdict(list)
-        units = [obj.dataset_info.units[name] for name in feature_names]
-        var_figs = []
-
-        sns.set(style="whitegrid", context="talk", font_scale=1.2)
-        plt.rcParams.update({
-            "text.usetex": False,  # Set to True if LaTeX is installed
-            "font.family": "serif",
-            "axes.labelsize": 14,
-            "axes.titlesize": 16,
-            "legend.fontsize": 12,
-            "xtick.labelsize": 12,
-            "ytick.labelsize": 12
-        })
-
-        for var_i, (var_name, var_unit) in enumerate(
-                zip(feature_names, units)
-            ):
-
-            # Plot
-            lead_times = np.arange(1, mean_ratio_pearo.shape[0] + 1)
-            plt.figure(figsize=(8, 6))
-            sns.lineplot(x=lead_times, y=mean_ratio_pred[:, var_i], marker="o", label="preds", linewidth=2.5, color="purple")
-            np.save(self.save_path / f"preds_spread_error_ratio_plot_per_param_{var_name}.npy", mean_ratio_pred[:, var_i])
-
-            # Plot
-            sns.lineplot(x=lead_times, y=mean_ratio_pearo[:, var_i], marker="o", label="pearo", linewidth=2.5, color="green")
-            np.save(self.save_path / f"pearo_spread_error_ratio_plot_per_param_{var_name}.npy", mean_ratio_pearo[:, var_i])
-
-            # Add perfect ratio reference line
-            plt.axhline(y=1, color="red", linestyle="--", linewidth=1.8, label="Perfect Ratio (1.0)")
-
-            # Labels and title
-            plt.xlabel("Lead Time")
-            plt.ylabel("Spread/Skill")
-            plt.title(f"{var_name} Spread-Skill Ratio Across Forecast Lead Times")
-            plt.legend(loc="best", frameon=True)
     
-            # Tight layout and publication-ready formatting
-            plt.tight_layout()
 
-            # add figure to var_figs
-            var_figs.append(plt.gcf())
-
-        # TODO : don't create all figs at once to avoid matplotlib warning
-        tensorboard = obj.logger.experiment
-        for var_name, fig in zip(feature_names, var_figs):
-            fig_name = f"spread_error_ratio_plot_per_param/{var_name}"
-            tensorboard.add_figure(fig_name, fig)
-            fig_full_name = f"{fig_name}.png"
-            if self.save_path is not None and self.save_path.exists():
-                dest_file = self.save_path / fig_full_name
-                paths_dict[var_name].append(dest_file)
-                dest_file.parent.mkdir(exist_ok=True)
-                fig.savefig(dest_file)
-
-            if obj.mlflow_logger:
-                run_id = obj.mlflow_logger.version
-                obj.mlflow_logger.experiment.log_figure(
-                    run_id=run_id,
-                    figure=fig,
-                    artifact_file=f"figures/{fig_full_name}",
-                )
-
-            plt.close(fig)
-
-class CRPSPlot(MapPlot):
+class EnScorePlot(MapPlot):
     """
-    Observer used to plot CRPS for each timestep.
+    Observer used to plot ensemble scores for each timestep.
     """
     def __init__(
         self,
-        metric: Metric,
+        bias_metric: Metric,
+        error_metric: Metric,
+        unbVar_metric: Metric,
+        crps_metric: Metric,
         dataset_name: str,
         num_samples_to_plot: int,
         num_features_to_plot: Union[None, int] = None,
@@ -1618,11 +983,23 @@ class CRPSPlot(MapPlot):
             prefix=prefix,
             save_path=save_path,
         )
-        self.metric = metric
+        self.bias_metric = bias_metric
+        self.error_metric = error_metric
+        self.unbVar_metric = unbVar_metric
+        self.crps_metric = crps_metric
+
         self.dataset_name = dataset_name
 
         self.crps_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
         self.crps_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+
+        self.bias_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        self.bias_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+
+        self.mean_spread_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        self.mean_error_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        self.mean_spread_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        self.mean_error_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
 
         
     def update(
@@ -1669,8 +1046,17 @@ class CRPSPlot(MapPlot):
                 prediction_rescaled = pred * std + mean
                 target_rescaled = targ * std + mean
 
+            self.crps_metric.update(prediction_rescaled, target_rescaled)
+            crps_dict = self.crps_metric.compute(num_batch=self.plotted_examples, prefix="test")
+
+            self.metric_spread.update(prediction_rescaled, target_rescaled)
+            std_dict = self.metric_spread.compute(prefix="test")
+            
+            self.metric_error.update(prediction_rescaled, target_rescaled)
+            error_dict = self.metric_error.compute(num_batch=self.plotted_examples, prefix="test")
+
             self.metric.update(prediction_rescaled, target_rescaled)
-            crps_dict = self.metric.compute(num_batch=self.plotted_examples, prefix="test")
+            bias_dict = self.metric.compute(num_batch=self.plotted_examples, prefix="test")
 
             feature_names = (
                 prediction.feature_names[: self.num_features_to_plot]
@@ -1684,6 +1070,15 @@ class CRPSPlot(MapPlot):
                 self.crps_pearo[self.plotted_examples] = crps_dict["pearo"].mean(dim=(1, 2)).cpu().numpy()
                 self.crps_pred[self.plotted_examples] = crps_dict["preds"].mean(dim=(1, 2)).cpu().numpy()
 
+                self.mean_spread_pred[self.plotted_examples] = std_dict["preds"].cpu().numpy()
+                self.mean_spread_pearo[self.plotted_examples] = std_dict["pearo"].cpu().numpy()
+
+                self.mean_error_pred[self.plotted_examples] = error_dict["preds"].cpu().numpy()
+                self.mean_error_pearo[self.plotted_examples] = error_dict["pearo"].cpu().numpy()
+
+                self.bias_pearo[self.plotted_examples] = bias_dict["pearo"].cpu().numpy()
+                self.bias_pred[self.plotted_examples] = bias_dict["preds"].cpu().numpy()
+
             self.plotted_examples += 1
 
         if self.plotted_examples == self.num_samples_to_plot: # end of epoch
@@ -1692,21 +1087,60 @@ class CRPSPlot(MapPlot):
 
                 # Average numpy arrays over all examples
                 mean_crps_pearo = np.mean(self.crps_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
-                mean_crps_preds = np.mean(self.crps_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
+                mean_crps_pred = np.mean(self.crps_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
+
+                mean_spread_pearo = np.sqrt(np.mean(self.mean_spread_pearo[:self.plotted_examples], axis=0)) # shape (LT, self.num_features_to_plot)
+                mean_rmse_pearo = np.sqrt(np.mean(self.mean_error_pearo[:self.plotted_examples], axis=0))
+                mean_spread_pred = np.sqrt(np.mean(self.mean_spread_pred[:self.plotted_examples], axis=0))
+                mean_rmse_pred = np.sqrt(np.mean(self.mean_error_pred[:self.plotted_examples], axis=0))
+
+                ssr_pearo =  np.sqrt(17/16)*np.divide(mean_spread_pearo, mean_rmse_pearo) # shape (LT, self.num_features_to_plot)
+                ssr_pred = np.sqrt(17/16)*np.divide(mean_spread_pred, mean_rmse_pred)
+
+                mean_bias_pearo = np.mean(self.bias_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
+                mean_bias_pred = np.mean(self.bias_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
 
                 # Plot figs only on main process
-                self.plot_map(
-                    obj,
-                    mean_crps_pearo,
-                    mean_crps_preds,
-                    feature_names,
-                )
+                for metric_name in ["crps", "bias", "spread_error_ratio", "error"]:
+                    if metric_name == "crps":
+                        self.plot_map(
+                            obj,
+                            metric_name,
+                            mean_crps_pearo,
+                            mean_crps_pred,
+                            feature_names,
+                        )
+                    elif metric_name == "bias":
+                        self.plot_map(
+                            obj,
+                            metric_name,
+                            mean_bias_pearo,
+                            mean_bias_pred,
+                            feature_names,
+                        )
+                    elif metric_name == "spread_error_ratio":
+                        self.plot_map(
+                            obj,
+                            metric_name,
+                            ssr_pearo,
+                            ssr_pred,
+                            feature_names,
+                        )
+                    elif metric_name == "error":
+                        self.plot_map(
+                            obj,
+                            metric_name,
+                            mean_rmse_pearo,
+                            mean_rmse_pred,
+                            feature_names,
+                        )
 
     def plot_map(
         self,
         obj: "AutoRegressiveLightning",
-        mean_crps_pearo: np.ndarray,  # (pred_steps, features)
-        mean_crps_preds: np.ndarray,  # (pred_steps, features)
+        metric_name: Literal["crps", "bias", "spread_error_ratio", "error"],
+        mean_metric_pearo: np.ndarray,  # (pred_steps, features)
+        mean_metric_preds: np.ndarray,  # (pred_steps, features)
         feature_names: List[str],
     ) -> None:
 
@@ -1727,18 +1161,18 @@ class CRPSPlot(MapPlot):
 
         for var_i, (var_name, var_unit) in enumerate(zip(feature_names, units)):
 
-            lead_times = np.arange(1, mean_crps_preds.shape[0] + 1)
+            lead_times = np.arange(1, mean_metric_preds.shape[0] + 1)
             plt.figure(figsize=(8, 6))
-            sns.lineplot(x=lead_times, y=mean_crps_preds[:, var_i], marker="o", label="preds", linewidth=2.5, color="purple")
-            np.save(self.save_path / f"preds_crps_plot_per_param_{var_name}.npy", mean_crps_preds[:, var_i])
+            sns.lineplot(x=lead_times, y=mean_metric_preds[:, var_i], marker="o", label="preds", linewidth=2.5, color="purple")
+            np.save(self.save_path / f"preds_{metric_name}_plot_per_param_{var_name}.npy", mean_metric_preds[:, var_i])
 
-            sns.lineplot(x=lead_times, y=mean_crps_pearo[:, var_i], marker="o", label="pearo", linewidth=2.5, color="green")
-            np.save(self.save_path / f"pearo_crps_plot_per_param_{var_name}.npy", mean_crps_pearo[:, var_i])
+            sns.lineplot(x=lead_times, y=mean_metric_pearo[:, var_i], marker="o", label="pearo", linewidth=2.5, color="green")
+            np.save(self.save_path / f"pearo_{metric_name}_plot_per_param_{var_name}.npy", mean_metric_pearo[:, var_i])
 
             # Labels and title
             plt.xlabel("Lead Time")
-            plt.ylabel("CRPS")
-            plt.title(f"{var_name} CRPS Across Forecast Lead Times")
+            plt.ylabel(metric_name.upper())
+            plt.title(f"{var_name} {metric_name.upper()} Across Forecast Lead Times")
             plt.legend(loc="best", frameon=True)
             plt.tight_layout()
 
@@ -1747,7 +1181,7 @@ class CRPSPlot(MapPlot):
         # TODO : don't create all figs at once to avoid matplotlib warning
         tensorboard = obj.logger.experiment
         for var_name, fig in zip(feature_names, var_figs):
-            fig_name = f"crps_plot_per_param/{var_name}"
+            fig_name = f"{metric_name}_plot_per_param/{var_name}"
             tensorboard.add_figure(fig_name, fig)
             fig_full_name = f"{fig_name}.png"
             if self.save_path is not None and self.save_path.exists():
@@ -1811,173 +1245,6 @@ class PredictionEpochPlot(MapPlot):
         for var_name, fig in zip(feature_names, var_figs):
             fig_name = (
                 f"epoch_evol_per_param/{var_name}_example_{self.plotted_examples}"
-            )
-            tensorboard.add_figure(fig_name, fig, obj.current_epoch)
-            fig_full_name = f"{fig_name}_{obj.current_epoch}.png"
-            if self.save_path is not None:
-                dest_file = self.save_path / fig_full_name
-                dest_file.parent.mkdir(exist_ok=True)
-                fig.savefig(dest_file)
-
-            if obj.mlflow_logger:
-                run_id = obj.mlflow_logger.version
-                obj.mlflow_logger.experiment.log_figure(
-                    run_id=run_id, figure=fig, artifact_file=f"figures/{fig_full_name}"
-                )
-
-        plt.close("all")  # Close all figs for this time step, saves memory
-
-class DownscalingPredictionEpochPlot(MapPlot):
-    """
-    Observer used to plot prediction and target for max timestep at each epoch.
-    Used to visualize improvement of model over epochs
-    """
-    def __init__(
-        self,
-        num_samples_to_plot: int = 1,
-        num_features_to_plot: Union[None, int] = None,
-        prefix: str = "Test",
-        save_path: Path = None,
-    ):
-        super().__init__(
-            num_samples_to_plot=num_samples_to_plot,
-            num_features_to_plot=num_features_to_plot,
-            prefix=prefix,
-            save_path=save_path,
-        )
-        self.requires_lowres: bool = True  # This observer requires lowres data
-
-    def update(
-        self,
-        obj: "AutoRegressiveLightning",
-        prediction: NamedTensor,
-        target: NamedTensor,
-        lowres: NamedTensor,
-    ) -> None:
-        """
-        Update. Should be call by "on_{training/validation/test}_step
-        """
-        pred = deepcopy(prediction).tensor  # In order to not modify the input
-        targ = deepcopy(target).tensor  # In order to not modify the input
-        lowres = deepcopy(lowres).tensor  # In order to not modify the input
-
-        # Here we reshape output from GNNS to be on the grid
-        if prediction.num_spatial_dims == 1:
-            pred = einops.rearrange(
-                pred, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
-            )
-            targ = einops.rearrange(
-                targ, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
-            )
-            lowres = einops.rearrange(
-                lowres, "b t (x y) n -> b t x y n", x=obj.grid_shape[0]
-            )
-
-        if (
-            obj.trainer.is_global_zero
-            # and self.plotted_examples < self.num_samples_to_plot
-        ):
-            # Need to plot more example predictions
-            n_additional_examples = min(
-                pred.shape[0], self.num_samples_to_plot - self.plotted_examples
-            )
-            # Rescale to original data scale
-            if obj.noise_strategy == "ddim":
-                # unnormalized [-1,1]
-                max_stat = obj.stats.to_list("max", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                min_stat = obj.stats.to_list("min", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                prediction_rescaled = (pred + 1)*(max_stat - min_stat) / 2 + min_stat
-                target_rescaled = (targ + 1)*(max_stat - min_stat) / 2 + min_stat
-                lowres_rescaled = (lowres + 1)*(max_stat - min_stat) / 2 + min_stat
-            else:
-                std = obj.stats.to_list("std", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                mean = obj.stats.to_list("mean", prediction.feature_names).to(
-                    pred, non_blocking=True
-                )
-                prediction_rescaled = pred * std + mean
-                target_rescaled = targ * std + mean
-                lowres_rescaled = lowres * std + mean
-
-                # save in numpy file std and mean
-                if self.save_path is not None:  
-                    np.save(self.save_path / "std.npy", std.cpu().numpy())
-                    np.save(self.save_path / "mean.npy", mean.cpu().numpy())
-            
-            # Iterate over the examples
-            # We assume examples are already on grid
-            for pred_slice, target_slice, lowres_slice in zip(
-                prediction_rescaled[:n_additional_examples],
-                target_rescaled[:n_additional_examples],
-                lowres_rescaled[:n_additional_examples],
-            ):
-                # Each slice is (pred_steps, Nlat, Nlon, features)
-                self.plotted_examples += 1  # Increment already here
-
-                var_vmin = target_slice.flatten(0, 2).min(dim=0)[0].cpu().numpy()
-                var_vmax = target_slice.flatten(0, 2).max(dim=0)[0].cpu().numpy()
-                var_vranges = list(zip(var_vmin, var_vmax))
-
-                feature_names = (
-                    prediction.feature_names[: self.num_features_to_plot]
-                    if self.num_features_to_plot
-                    else prediction.feature_names
-                )
-
-                self.plot_map(
-                    obj,
-                    pred_slice,
-                    target_slice,
-                    lowres_slice,
-                    feature_names,
-                    var_vranges,
-                )
-
-    def plot_map(
-        self,
-        obj: "AutoRegressiveLightning",
-        prediction: torch.tensor,
-        target: torch.tensor,
-        lowres: torch.tensor,
-        feature_names: List[str],
-        var_vranges: List,
-    ) -> None:
-        # We keep only the max timestep of the pred and target: shape (Nlat, Nlon, features)
-        max_step = prediction.shape[0]
-        pred_t, target_t, lowres_t = prediction[max_step - 1], target[max_step - 1], lowres[max_step - 1]
-
-        # Create one figure per variable at this time step
-        # This generate a matplotlib warning as more than 20 figures are plotted.
-        leadtime = obj.dataset_info.pred_step * max_step
-        var_figs = [
-            plot_prediction_downscaling(
-                pred_t[:, :, var_i],
-                target_t[:, :, var_i],
-                lowres_t[:, :, var_i],
-                obj.interior_2d[:, :, 0],
-                title=f"{var_name} ({var_unit}), "
-                f"t={max_step} ({leadtime} h) - epoch {obj.current_epoch}",
-                vrange=var_vrange,
-                domain_info=obj.dataset_info.domain_info,
-            )
-            for var_i, (var_name, var_unit, var_vrange) in enumerate(
-                zip(
-                    feature_names,
-                    [obj.dataset_info.units[name] for name in feature_names],
-                    var_vranges,
-                )
-            )
-        ]
-
-        tensorboard = obj.logger.experiment
-        for var_name, fig in zip(feature_names, var_figs):
-            fig_name = (
-                f"epoch_evol_per_param/{var_name}_downscale_example_{self.plotted_examples}"
             )
             tensorboard.add_figure(fig_name, fig, obj.current_epoch)
             fig_full_name = f"{fig_name}_{obj.current_epoch}.png"

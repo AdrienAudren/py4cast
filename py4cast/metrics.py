@@ -691,7 +691,7 @@ class MetricBias(Metric):
         self.pred_step = pred_step 
         
         self.add_state("preds", default=[], dist_reduce_fx="cat")
-        self.add_state("titan", default=[], dist_reduce_fx="cat")
+        self.add_state("pearo", default=[], dist_reduce_fx="cat")
         # dist_reduce_fx="cat" because we gather multiple batch before computing std
 
         self.dataset_name = dataset_info.name
@@ -700,31 +700,43 @@ class MetricBias(Metric):
         """
         Assuming a batch contains the members of a same ensemble,
         compute the spread of batch=members for both target and pred.
-        prediction/target: (B, Mb, pred_steps, N_grid, d_f) / (B, pred_steps, W, H, d_f)
+        prediction/target: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
         called at each end of step
         """
-        self.preds.append(pred)
-        self.titan.append(target)
 
-    def compute(self, prefix: str = "val") -> dict:
+        if pred.shape != target.shape:
+            raise ValueError("preds and target must have the same shape")
+
+        self.preds.append(pred)
+        self.pearo.append(target)
+
+    def compute(self, num_batch, prefix: str = "val") -> dict:
         """
         Compute spread mean for each channels/features, return a dict.
         Should be called at each epoch's end
         """
         # Ensure concatenating into a single tensor along device dimension
         preds = dim_zero_cat(self.preds)
-        titan = dim_zero_cat(self.titan)
+        pearo = dim_zero_cat(self.pearo)
+        env_path = os.environ["TITAN_PROXY_OBS"]
+        target = torch.from_numpy(np.load(f"{env_path}/titan_gt_rescaled_batch_{num_batch}.npy")).to(preds.device)
+        target = target[:,1:,...]  # remove time dim 0
+        # print(f"target shape: {target.shape}")
+        # print(f"preds shape: {preds.shape}")
+        # target = target[...,:8]
         # skill computation
-        preds_skill = torch.mean((preds.mean(dim=1) - titan) ** 2, dim=(0, 2, 3))
+        preds_bias = torch.mean(preds.mean(dim=0) - target[0], dim=(1,2))
+        pearo_bias = torch.mean(pearo.mean(dim=0) - target[0], dim=(1,2))
         # Reconvert to initial type then reset metric's state
         self.preds = []
-        self.titan = []
+        self.pearo = []
         self.reset()
 
-        return {"skill": preds_skill, # (pred_steps, d_f)
+        return {"preds": preds_bias, # (pred_steps, d_f)
+                "pearo": pearo_bias, # (pred_steps, d_f)
                 }
 
-class MetricSquaredSkill(Metric):
+class MetricSquaredError(Metric):
     """
     Compute the skill = RMSE of ensemble mean (Fortin et al. 2014) with TITAN test target rollout as ground truth
     """
