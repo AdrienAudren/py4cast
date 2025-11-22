@@ -124,6 +124,21 @@ def plot_log_psd_downscaling(
     plt.close()
     return fig
 
+def plot_log_psd_perLeadtimes(
+    k: np.ndarray, psd_mean: np.ndarray, psd_member: np.ndarray, psd_target: np.ndarray, title: str = ""
+):
+    fig, ax = plt.subplots(figsize=(15, 10))
+    ax.plot(k, psd_mean, label="Ensemble Mean")
+    ax.plot(k, psd_member, label="Ensemble Member")
+    ax.plot(k, psd_target, label="PEARO")
+    ax.set_xlabel("k")
+    ax.set_ylabel("psd_k")
+    ax.legend()
+    ax.set_title(title)
+    plt.yscale("log")
+    plt.close()
+    return fig
+
 
 @matplotlib.rc_context(fractional_plot_bundle(1))
 def plot_prediction_downscaling(
@@ -634,118 +649,6 @@ class PredictionTimestepPlot(MapPlot):
 
                 plt.close(fig)
 
-    def plot_map(
-        self,
-        obj: "AutoRegressiveLightning",
-        prediction: torch.tensor,
-        target: torch.tensor,
-        lowres: torch.tensor,
-        feature_names: List[str],
-        var_vranges: List,
-    ) -> None:
-        # Prediction and target: (pred_steps, Nlat, Nlon, features)
-        # Iterate over prediction horizon time steps
-        paths_dict = defaultdict(list)
-        for t_i, (pred_t, target_t, lowres_t) in enumerate(zip(prediction, target, lowres), start=1):
-            # Create one figure per variable at this time step
-            # This generate a matplotlib warning as more than 20 figures are plotted.
-            units = [obj.dataset_info.units[name] for name in feature_names]
-            var_figs = [
-                plot_prediction_downscaling(
-                    pred_t[:, :, var_i],
-                    target_t[:, :, var_i],
-                    lowres_t[:, :, var_i],
-                    obj.interior_2d[:, :, 0],
-                    title=f"{var_name} ({var_unit}), "
-                    f"t={t_i} ({obj.dataset_info.pred_step*t_i} h)",
-                    vrange=var_vrange,
-                    domain_info=obj.dataset_info.domain_info,
-                )
-                for var_i, (var_name, var_unit, var_vrange) in enumerate(
-                    zip(feature_names, units, var_vranges)
-                )
-            ]
-            # TODO : don't create all figs at once to avoid matplotlib warning
-            tensorboard = obj.logger.experiment
-            for var_name, fig in zip(feature_names, var_figs):
-                fig_name = f"downscale_timestep_evol_per_param/{var_name}_example_{self.plotted_examples}"
-                tensorboard.add_figure(fig_name, fig, t_i)
-                fig_full_name = f"{fig_name}_{t_i}.png"
-                if self.save_path is not None and self.save_path.exists():
-                    dest_file = self.save_path / fig_full_name
-                    paths_dict[var_name].append(dest_file)
-                    dest_file.parent.mkdir(exist_ok=True)
-                    fig.savefig(dest_file)
-
-                if obj.mlflow_logger:
-                    run_id = obj.mlflow_logger.version
-                    obj.mlflow_logger.experiment.log_figure(
-                        run_id=run_id,
-                        figure=fig,
-                        artifact_file=f"figures/{fig_full_name}",
-                    )
-
-                plt.close(fig)
-
-    def plot_map(
-        self,
-        obj: "AutoRegressiveLightning",
-        prediction: torch.tensor,
-        target: torch.tensor,
-        noisyout: torch.tensor,
-        feature_names: List[str],
-        var_vranges: List,
-    ) -> None:
-        # Prediction and target: (pred_steps, Nlat, Nlon, features)
-        # Iterate over prediction horizon time steps
-        paths_dict = defaultdict(list)
-        for t_i, (pred_t, target_t, noisyout_t) in enumerate(zip(prediction, target, noisyout), start=1):
-            # Create one figure per variable at this time step
-            # This generate a matplotlib warning as more than 20 figures are plotted.
-            units = [obj.dataset_info.units[name] for name in feature_names]
-            var_figs = [
-                plot_prediction_noise(
-                    pred_t[:, :, var_i],
-                    target_t[:, :, var_i],
-                    noisyout_t[:, :, var_i],
-                    obj.interior_2d[:, :, 0],
-                    title=f"{var_name} ({var_unit}), "
-                    f"t={t_i} ({obj.dataset_info.pred_step*t_i} h)",
-                    vrange=var_vrange,
-                    domain_info=obj.dataset_info.domain_info,
-                )
-                for var_i, (var_name, var_unit, var_vrange) in enumerate(
-                    zip(feature_names, units, var_vranges)
-                )
-            ]
-            # TODO : don't create all figs at once to avoid matplotlib warning
-            tensorboard = obj.logger.experiment
-            for var_name, fig in zip(feature_names, var_figs):
-                fig_name = f"noise_timestep_evol_per_param/{var_name}_example_{self.plotted_examples}"
-                tensorboard.add_figure(fig_name, fig, t_i)
-                fig_full_name = f"{fig_name}_{t_i}.png"
-                if self.save_path is not None and self.save_path.exists():
-                    dest_file = self.save_path / fig_full_name
-                    paths_dict[var_name].append(dest_file)
-                    dest_file.parent.mkdir(exist_ok=True)
-                    fig.savefig(dest_file)
-
-                if obj.mlflow_logger:
-                    run_id = obj.mlflow_logger.version
-                    obj.mlflow_logger.experiment.log_figure(
-                        run_id=run_id,
-                        figure=fig,
-                        artifact_file=f"figures/{fig_full_name}",
-                    )
-
-                plt.close(fig)
-
-        # for var_name, paths in paths_dict.items():
-        #     if len(paths) > 1:
-        #         make_gif(
-        #             paths, self.save_path / f"timestep_evol_per_param/{var_name}.gif"
-        #         )
-
 class SpreadTimestepPlot(MapPlot):
     """
     Observer used to plot prediction and target spread map for each timestep.
@@ -996,9 +899,9 @@ class EnScorePlot(MapPlot):
         self.bias_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
         self.bias_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
 
-        self.mean_spread_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        self.mean_unbVar_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
         self.mean_error_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
-        self.mean_spread_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        self.mean_unbVar_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
         self.mean_error_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
 
         
@@ -1049,14 +952,14 @@ class EnScorePlot(MapPlot):
             self.crps_metric.update(prediction_rescaled, target_rescaled)
             crps_dict = self.crps_metric.compute(num_batch=self.plotted_examples, prefix="test")
 
-            self.metric_spread.update(prediction_rescaled, target_rescaled)
-            std_dict = self.metric_spread.compute(prefix="test")
+            self.unbVar_metric.update(prediction_rescaled, target_rescaled)
+            unbVar_dict = self.unbVar_metric.compute(prefix="test")
             
-            self.metric_error.update(prediction_rescaled, target_rescaled)
-            error_dict = self.metric_error.compute(num_batch=self.plotted_examples, prefix="test")
+            self.error_metric.update(prediction_rescaled, target_rescaled)
+            error_dict = self.error_metric.compute(num_batch=self.plotted_examples, prefix="test")
 
-            self.metric.update(prediction_rescaled, target_rescaled)
-            bias_dict = self.metric.compute(num_batch=self.plotted_examples, prefix="test")
+            self.bias_metric.update(prediction_rescaled, target_rescaled)
+            bias_dict = self.bias_metric.compute(num_batch=self.plotted_examples, prefix="test")
 
             feature_names = (
                 prediction.feature_names[: self.num_features_to_plot]
@@ -1070,8 +973,8 @@ class EnScorePlot(MapPlot):
                 self.crps_pearo[self.plotted_examples] = crps_dict["pearo"].mean(dim=(1, 2)).cpu().numpy()
                 self.crps_pred[self.plotted_examples] = crps_dict["preds"].mean(dim=(1, 2)).cpu().numpy()
 
-                self.mean_spread_pred[self.plotted_examples] = std_dict["preds"].cpu().numpy()
-                self.mean_spread_pearo[self.plotted_examples] = std_dict["pearo"].cpu().numpy()
+                self.mean_unbVar_pred[self.plotted_examples] = unbVar_dict["preds"].cpu().numpy()
+                self.mean_unbVar_pearo[self.plotted_examples] = unbVar_dict["pearo"].cpu().numpy()
 
                 self.mean_error_pred[self.plotted_examples] = error_dict["preds"].cpu().numpy()
                 self.mean_error_pearo[self.plotted_examples] = error_dict["pearo"].cpu().numpy()
@@ -1089,13 +992,13 @@ class EnScorePlot(MapPlot):
                 mean_crps_pearo = np.mean(self.crps_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
                 mean_crps_pred = np.mean(self.crps_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
 
-                mean_spread_pearo = np.sqrt(np.mean(self.mean_spread_pearo[:self.plotted_examples], axis=0)) # shape (LT, self.num_features_to_plot)
+                mean_unbVar_pearo = np.sqrt(np.mean(self.mean_unbVar_pearo[:self.plotted_examples], axis=0)) # shape (LT, self.num_features_to_plot)
                 mean_rmse_pearo = np.sqrt(np.mean(self.mean_error_pearo[:self.plotted_examples], axis=0))
-                mean_spread_pred = np.sqrt(np.mean(self.mean_spread_pred[:self.plotted_examples], axis=0))
+                mean_unbVar_pred = np.sqrt(np.mean(self.mean_unbVar_pred[:self.plotted_examples], axis=0))
                 mean_rmse_pred = np.sqrt(np.mean(self.mean_error_pred[:self.plotted_examples], axis=0))
 
-                ssr_pearo =  np.sqrt(17/16)*np.divide(mean_spread_pearo, mean_rmse_pearo) # shape (LT, self.num_features_to_plot)
-                ssr_pred = np.sqrt(17/16)*np.divide(mean_spread_pred, mean_rmse_pred)
+                ssr_pearo =  np.sqrt(17/16)*np.divide(mean_unbVar_pearo, mean_rmse_pearo) # shape (LT, self.num_features_to_plot)
+                ssr_pred = np.sqrt(17/16)*np.divide(mean_unbVar_pred, mean_rmse_pred)
 
                 mean_bias_pearo = np.mean(self.bias_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
                 mean_bias_pred = np.mean(self.bias_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
@@ -1103,7 +1006,7 @@ class EnScorePlot(MapPlot):
                 # Plot figs only on main process
                 for metric_name in ["crps", "bias", "spread_error_ratio", "error"]:
                     if metric_name == "crps":
-                        self.plot_map(
+                        self.plot_curves(
                             obj,
                             metric_name,
                             mean_crps_pearo,
@@ -1111,7 +1014,7 @@ class EnScorePlot(MapPlot):
                             feature_names,
                         )
                     elif metric_name == "bias":
-                        self.plot_map(
+                        self.plot_curves(
                             obj,
                             metric_name,
                             mean_bias_pearo,
@@ -1119,7 +1022,7 @@ class EnScorePlot(MapPlot):
                             feature_names,
                         )
                     elif metric_name == "spread_error_ratio":
-                        self.plot_map(
+                        self.plot_curves(
                             obj,
                             metric_name,
                             ssr_pearo,
@@ -1127,7 +1030,7 @@ class EnScorePlot(MapPlot):
                             feature_names,
                         )
                     elif metric_name == "error":
-                        self.plot_map(
+                        self.plot_curves(
                             obj,
                             metric_name,
                             mean_rmse_pearo,
@@ -1135,7 +1038,7 @@ class EnScorePlot(MapPlot):
                             feature_names,
                         )
 
-    def plot_map(
+    def plot_curves(
         self,
         obj: "AutoRegressiveLightning",
         metric_name: Literal["crps", "bias", "spread_error_ratio", "error"],
@@ -1199,6 +1102,19 @@ class EnScorePlot(MapPlot):
                 )
 
             plt.close(fig)
+
+    
+    def plot_map(
+        self,
+        obj,
+        prediction,
+        target,
+        feature_names,
+        var_vranges,
+    ):
+        # This plotter may not need maps—so just ignore inputs.
+        # But the method must exist for the class to be instantiable.
+        return
 
 
 class PredictionEpochPlot(MapPlot):

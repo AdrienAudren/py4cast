@@ -7,7 +7,7 @@ from scipy.fftpack import dct
 from torchmetrics import Metric
 from torchmetrics.utilities import dim_zero_cat
 from py4cast.datasets.base import DatasetInfo, NamedTensor
-from py4cast.plots import plot_log_psd, plot_log_psd_downscaling
+from py4cast.plots import plot_log_psd, plot_log_psd_downscaling, plot_log_psd_perLeadtimes
 
 
 class MetricPSDK(Metric):
