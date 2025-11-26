@@ -878,14 +878,14 @@ class AutoRegressiveLightning(LightningModule):
                     #     last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
 
 
-                    predicted_state = (
-                        # select the last timestep
-                        last_prev_state
-                        + y * step_diff_std
-                        + step_diff_mean
-                    )
+                    # predicted_state = (
+                    #     # select the last timestep
+                    #     last_prev_state
+                    #     + y * step_diff_std
+                    #     + step_diff_mean
+                    # )
 
-                    # predicted_state = y
+                    predicted_state = y
                 else:
                     predicted_state = prev_states.select_dim("timestep", -1) + y
 
@@ -1599,7 +1599,7 @@ class AutoRegressiveLightning(LightningModule):
                     unbVar_metric=self.unbVar_metric,
                     crps_metric=self.crps_metric,
                     dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=93,
+                    num_samples_to_plot=30,
                     num_features_to_plot=6,
                     prefix="Test",
                     save_path=self.save_path,
@@ -1698,36 +1698,36 @@ class AutoRegressiveLightning(LightningModule):
         Compute test metrics and make plots at the end of test epoch.
         """
         if self.logging_enabled:
-            # dict_metrics = {}
-            # if self.dynamical_downscaling:
-            #     dict_metrics.update(self.downscale_psd_plot_metric.compute(prefix="test"))
-            # else:
-            #     dict_metrics.update(self.psd_plot_metric.compute(prefix="test"))
-            # dict_metrics.update(self.rmse_psd_plot_metric.compute(prefix="test"))
-            # dict_metrics.update(self.acc_metric.compute(prefix="test"))
+            dict_metrics = {}
+            if self.dynamical_downscaling:
+                dict_metrics.update(self.downscale_psd_plot_metric.compute(prefix="test"))
+            else:
+                dict_metrics.update(self.psd_plot_metric.compute(prefix="test"))
+            dict_metrics.update(self.rmse_psd_plot_metric.compute(prefix="test"))
+            dict_metrics.update(self.acc_metric.compute(prefix="test"))
 
-            # for name, elmnt in dict_metrics.items():
-            #     if isinstance(elmnt, matplotlib.figure.Figure):
-            #         # Tensorboard logger
-            #         self.logger.experiment.add_figure(
-            #             f"{name}", elmnt, self.current_epoch
-            #         )
-            #         # If MLFlowLogger activated
-            #         if self.mlflow_logger:
-            #             run_id = self.mlflow_logger.version
-            #             self.mlflow_logger.experiment.log_figure(
-            #                 run_id=run_id,
-            #                 figure=elmnt,
-            #                 artifact_file=f"figures/{name}.png",
-            #             )
-            #     elif isinstance(elmnt, torch.Tensor):
-            #         self.log_dict(
-            #             {name: elmnt},
-            #             prog_bar=False,
-            #             on_step=False,
-            #             on_epoch=True,
-            #             sync_dist=True,
-            #         )
+            for name, elmnt in dict_metrics.items():
+                if isinstance(elmnt, matplotlib.figure.Figure):
+                    # Tensorboard logger
+                    self.logger.experiment.add_figure(
+                        f"{name}", elmnt, self.current_epoch
+                    )
+                    # If MLFlowLogger activated
+                    if self.mlflow_logger:
+                        run_id = self.mlflow_logger.version
+                        self.mlflow_logger.experiment.log_figure(
+                            run_id=run_id,
+                            figure=elmnt,
+                            artifact_file=f"figures/{name}.png",
+                        )
+                elif isinstance(elmnt, torch.Tensor):
+                    self.log_dict(
+                        {name: elmnt},
+                        prog_bar=False,
+                        on_step=False,
+                        on_epoch=True,
+                        sync_dist=True,
+                    )
 
             # Notify plotters that the test epoch end
             for plotter in self.test_plotters:
