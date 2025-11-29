@@ -3,92 +3,170 @@
         "train": {
             "start": 20210615,
             "end": 20210615,
-            "refcst_daily_runs": [75600],
+            "refcst_daily_runs": [
+                75600
+            ],
             "refcst_leadtime_start_in_sec": 3600,
             "refcst_leadtime_end_in_sec": 7200,
             "refcst_leadtime_step_in_sec": 3600
         },
         "test": {
-            "start": 20230601,
-            "end": 20230630,
-            "refcst_daily_runs": [75600],
+            "start": 20230501,
+            "end": 20230531,
+            "refcst_daily_runs": [
+                75600
+            ],
             "refcst_leadtime_start_in_sec": 3600,
-            "refcst_leadtime_end_in_sec": 10800, 
+            "refcst_leadtime_end_in_sec": 10800,
             "refcst_leadtime_step_in_sec": 3600
         },
         "valid": {
             "start": 20210717,
             "end": 20210717,
-            "refcst_daily_runs": [75600],
+            "refcst_daily_runs": [
+                75600
+            ],
             "refcst_leadtime_start_in_sec": 3600,
             "refcst_leadtime_end_in_sec": 7200,
             "refcst_leadtime_step_in_sec": 3600
         }
     },
-    "grid":{
-        "name":"EURW1S40_refacto", 
-        "border_size":0, 
-        "subdomain":[100, 612, 240, 880],
+    "grid": {
+        "name": "EURW1S40_refacto",
+        "border_size": 0,
+        "subdomain": [
+            100,
+            612,
+            240,
+            880
+        ],
         "proj_name": "PlateCarree",
         "projection_kwargs": {}
-    }, 
-    "settings":{
+    },
+    "settings": {
         "standardize": true,
         "file_format": "npy"
     },
     "params": {
         "pearo_t2m": {
-            "levels": [2],
+            "levels": [
+                2
+            ],
             "kind": "input_output"
         },
         "pearo_r2": {
-            "levels": [2],
+            "levels": [
+                2
+            ],
             "kind": "input_output"
         },
         "pearo_tp": {
-            "levels": [0],
+            "levels": [
+                0
+            ],
             "kind": "input_output"
         },
         "pearo_u10": {
-            "levels": [10],
+            "levels": [
+                10
+            ],
             "kind": "input_output"
         },
         "pearo_v10": {
-            "levels": [10],
+            "levels": [
+                10
+            ],
             "kind": "input_output"
         },
         "pearo_t": {
-            "levels": [250, 500, 700, 850],
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input_output"
         },
         "pearo_u": {
-            "levels": [250, 500, 700, 850],
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input_output"
         },
         "pearo_v": {
-            "levels": [250, 500, 700, 850],
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input_output"
         },
         "pearo_z": {
-            "levels": [250, 500, 700, 850],
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input_output"
         },
         "pearp_t": {
-            "levels": [250, 500, 700, 850],
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input"
         },
-        "pearp_u":{
-            "levels": [250, 500, 700, 850],
+        "pearp_u": {
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input"
         },
-        "pearp_v":{
-            "levels": [250, 500, 700, 850],
+        "pearp_v": {
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input"
         },
-        "pearp_z":{
-            "levels": [250, 500, 700, 850],
+        "pearp_z": {
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input"
         }
     },
-    "members": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
+    "members": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+    ]
 }

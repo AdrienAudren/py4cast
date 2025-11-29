@@ -878,14 +878,14 @@ class AutoRegressiveLightning(LightningModule):
                     #     last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
 
 
-                    # predicted_state = (
-                    #     # select the last timestep
-                    #     last_prev_state
-                    #     + y * step_diff_std
-                    #     + step_diff_mean
-                    # )
+                    predicted_state = (
+                        # select the last timestep
+                        last_prev_state
+                        + y * step_diff_std
+                        + step_diff_mean
+                    )
 
-                    predicted_state = y
+                    # predicted_state = y
                 else:
                     predicted_state = prev_states.select_dim("timestep", -1) + y
 
@@ -1599,7 +1599,7 @@ class AutoRegressiveLightning(LightningModule):
                     unbVar_metric=self.unbVar_metric,
                     crps_metric=self.crps_metric,
                     dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=30,
+                    num_samples_to_plot=31,
                     num_features_to_plot=6,
                     prefix="Test",
                     save_path=self.save_path,
