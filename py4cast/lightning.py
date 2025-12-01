@@ -843,7 +843,7 @@ class AutoRegressiveLightning(LightningModule):
                 x = self._next_x(batch, prev_states, i) 
                 if self.noise_strategy == "CondLayerNorm":
                     # generate (32,) noise vectors for stochastic conditional layer normalization
-                    # errorful joint probabilistic weather forecasting from marginals: https://arxiv.org/pdf/2506.10772
+                    # skillful joint probabilistic weather forecasting from marginals: https://arxiv.org/pdf/2506.10772
                     epsilon = torch.randn(self.batch_size*self.noise_members, 32, device=prev_states.device)
 
                 # Graph (B, N_grid, d_f) or Conv (B, N_lat,N_lon d_f)
