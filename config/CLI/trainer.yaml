@@ -1,7 +1,7 @@
 # lightning.pytorch==2.4.0
 seed_everything: true
 
-ckpt_path: /scratch/audrena/py4cast_expe/test_repoAI4SIM/mae2crps_1order_2Mb_4BS_5em4_MstepFt3/checkpoints/last.ckpt # "${oc.env:CKPT_DIR}/crps_0order_5em4_2M_2BS/checkpoints/epoch=139-val_mean_loss=3.25.ckpt" #${oc.decode:${oc.env:PATH2CKPT}} #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
+ckpt_path: /scratch/audrena/py4cast_expe/titan_21var/mae2crps_0order_5em4_2M_2BS/checkpoints/epoch=149-val_mean_loss=3.25.ckpt # "${oc.env:CKPT_DIR}/crps_0order_5em4_2M_2BS/checkpoints/epoch=139-val_mean_loss=3.25.ckpt" #${oc.decode:${oc.env:PATH2CKPT}} #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
 
 # optimizer:
 #   class_path: torch.optim.AdamW
@@ -28,8 +28,8 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
     - class_path: lightning.pytorch.loggers.TensorBoardLogger
       init_args:
         # default_hp_metric: False # see if tensoboard still works before rm TODO
-        save_dir:   /scratch/audrena/py4cast_expe/test_repoAI4SIM/ #${oc.decode:${oc.env:CKPT_DIR}}  # /scratch/audrena/py4cast_expe/test_repoAI4SIM/                  #titan_30varARP/ #       "/py4cast_root_dir/titan_6var/" "/py4cast_root_dir/test_metrics" # Root directory
-        name:         mae2crps_1order_2Mb_4BS_5em4_MstepFt3                   # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
+        save_dir:   /scratch/audrena/py4cast_expe/titan_21var/ #${oc.decode:${oc.env:CKPT_DIR}}  # /scratch/audrena/py4cast_expe/test_repoAI4SIM/                  #titan_30varARP/ #       "/py4cast_root_dir/titan_6var/" "/py4cast_root_dir/test_metrics" # Root directory
+        name:         mae2crps_0order_5em4_2M_2BS                   # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
         version:  june2023_test_poesy  # EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
     # Your logs will be saved in save_dir/*name*/version/
     # (checkpoints, config.yaml, images, scores, tensorboard logs, ...)
