@@ -607,31 +607,31 @@ class AutoRegressiveLightning(LightningModule):
                 
     #     return x, last_smoothed
 
-    # def _next_x(
-    #     self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int
-    # ) -> torch.Tensor:
-    #     """
-    #     Build the next x input for the model at timestep step_idx using the :
-    #     - previous states
-    #     - forcing
-    #     - static features
-    #     """
+    def _next_x(
+        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int
+    ) -> torch.Tensor:
+        """
+        Build the next x input for the model at timestep step_idx using the :
+        - previous states
+        - forcing
+        - static features
+        """
 
-    #     forcing = batch.forcing.select_dim("timestep", step_idx, bare_tensor=False)
-    #     forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
+        forcing = batch.forcing.select_dim("timestep", step_idx, bare_tensor=False)
+        forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
 
-    #     last_smoothed = self.smooth(prev_states.select_dim("timestep", -1), n=10)
+        last_smoothed = self.smooth(prev_states.select_dim("timestep", -1), n=10)
 
-    #     x = torch.cat(
-    #         [
-    #             self.smooth(prev_states.select_dim("timestep", idx), n=4)
-    #             for idx in range(batch.num_input_steps)   
-    #         ]
-    #         + [self.grid_static_features[: batch.batch_size], forcing_tensor],
-    #         dim=forcing.dim_index("features"),
-    #     )
+        x = torch.cat(
+            [
+                prev_states.select_dim("timestep", idx)
+                for idx in range(batch.num_input_steps)   
+            ]
+            + [self.grid_static_features[: batch.batch_size], forcing_tensor],
+            dim=forcing.dim_index("features"),
+        )
                 
-    #     return x, last_smoothed
+        return x, last_smoothed
 
     # def _next_x(
     #     self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int
@@ -652,28 +652,28 @@ class AutoRegressiveLightning(LightningModule):
     #     )
                 
     #     return x
-    def _next_x(
-        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int
-    ) -> torch.Tensor:
-        """
-        Build the next x input for the model at timestep step_idx using the :
-        - previous states
-        - forcing
-        - static features
-        """
+    # def _next_x(
+    #     self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int
+    # ) -> torch.Tensor:
+    #     """
+    #     Build the next x input for the model at timestep step_idx using the :
+    #     - previous states
+    #     - forcing
+    #     - static features
+    #     """
 
-        forcing = batch.forcing.select_dim("timestep", step_idx, bare_tensor=False)
-        forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
+    #     forcing = batch.forcing.select_dim("timestep", step_idx, bare_tensor=False)
+    #     forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
 
-        x = torch.cat(
-            [prev_states.select_dim("timestep", idx)
-             for idx in range(batch.num_input_steps)] 
-            +
-            [self.grid_static_features[: batch.batch_size], forcing_tensor],
-            dim=forcing.dim_index("features"),
-        )
+    #     x = torch.cat(
+    #         [prev_states.select_dim("timestep", idx)
+    #          for idx in range(batch.num_input_steps)] 
+    #         +
+    #         [self.grid_static_features[: batch.batch_size], forcing_tensor],
+    #         dim=forcing.dim_index("features"),
+    #     )
                 
-        return x
+    #     return x
 
     def _step_diffs(
         self, feature_names: List[str], device: torch.device
@@ -839,8 +839,8 @@ class AutoRegressiveLightning(LightningModule):
             # Should be greater or equal to 1 (otherwise nothing is done).
             for k in range(num_inter_steps):
                 # x, last_smoothed = self._next_x(batch, prev_states, i, scale_factor=scale_factor) # aro_t smoothed according to scale factor
-                # x, last_smoothed = self._next_x(batch, prev_states, i) # aro_t smoothed according to scale factor
-                x = self._next_x(batch, prev_states, i) 
+                x, last_smoothed = self._next_x(batch, prev_states, i) # aro_t smoothed according to scale factor
+                # x = self._next_x(batch, prev_states, i) 
                 if self.noise_strategy == "CondLayerNorm":
                     # generate (32,) noise vectors for stochastic conditional layer normalization
                     # skillful joint probabilistic weather forecasting from marginals: https://arxiv.org/pdf/2506.10772
@@ -869,23 +869,23 @@ class AutoRegressiveLightning(LightningModule):
                 # We update the latest of our prev_states with the network output
                 if scale_y:
 
-                    last_prev_state = prev_states.select_dim("timestep", -1)
-                    if self.noise_strategy in ["CondLayerNorm", "forcing"]:
-                        last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
-                    
-                    # last_prev_state = last_smoothed
+                    # last_prev_state = prev_states.select_dim("timestep", -1)
                     # if self.noise_strategy in ["CondLayerNorm", "forcing"]:
                     #     last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
+                    
+                    last_prev_state = last_smoothed
+                    if self.noise_strategy in ["CondLayerNorm", "forcing"]:
+                        last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
 
 
-                    # predicted_state = (
-                    #     # select the last timestep
-                    #     last_prev_state
-                    #     + y * step_diff_std
-                    #     + step_diff_mean
-                    # )
+                    predicted_state = (
+                        # select the last timestep
+                        last_prev_state
+                        + y * step_diff_std
+                        + step_diff_mean
+                    )
 
-                    predicted_state = y
+                    # predicted_state = y
                 else:
                     predicted_state = prev_states.select_dim("timestep", -1) + y
 
