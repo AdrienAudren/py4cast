@@ -653,7 +653,7 @@ class AutoRegressiveLightning(LightningModule):
                 
     #     return x
     def _next_x(
-        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int
+        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int, noise: bool=False
     ) -> torch.Tensor:
         """
         Build the next x input for the model at timestep step_idx using the :
@@ -666,12 +666,22 @@ class AutoRegressiveLightning(LightningModule):
         forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
 
         x = torch.cat(
-            [prev_states.select_dim("timestep", idx)
-             for idx in range(batch.num_input_steps)] 
-            +
-            [self.grid_static_features[: batch.batch_size], forcing_tensor],
-            dim=forcing.dim_index("features"),
-        )
+                [prev_states.select_dim("timestep", idx)
+                for idx in range(batch.num_input_steps)] 
+                +
+                [self.grid_static_features[: batch.batch_size], forcing_tensor],
+                dim=forcing.dim_index("features"),
+            )
+
+        if noise and self.noise_strategy == "forcing":
+            # concatenate noise channel as a forcing
+            x = torch.cat(
+                [
+                    torch.cat([x, torch.randn_like(forcing_tensor[..., 0].unsqueeze(-1))], dim=forcing.dim_index("features")).unsqueeze(1) for _ in range(self.noise_members)
+                ],
+                dim=1,
+            )
+            x = x.reshape(self.batch_size*self.noise_members, *x.shape[2:])
                 
         return x
 
@@ -843,8 +853,12 @@ class AutoRegressiveLightning(LightningModule):
                 x = self._next_x(batch, prev_states, i) 
                 if self.noise_strategy == "CondLayerNorm":
                     # generate (32,) noise vectors for stochastic conditional layer normalization
-                    # skillful joint probabilistic weather forecasting from marginals: https://arxiv.org/pdf/2506.10772
-                    epsilon = torch.randn(self.batch_size*self.noise_members, 4096, device=prev_states.device)
+                    # Skillful joint probabilistic weather forecasting from marginals: https://arxiv.org/pdf/2506.10772
+                    epsilon = torch.randn(self.batch_size*self.noise_members, 32, device=prev_states.device)
+                
+                elif self.noise_strategy == "forcing":
+                    # Add noise channel as forcing with noise=True
+                    x = self._next_x(batch, prev_states, i, noise=True)
 
                 # Graph (B, N_grid, d_f) or Conv (B, N_lat,N_lon d_f)
                 if self.channels_last:
@@ -869,23 +883,23 @@ class AutoRegressiveLightning(LightningModule):
                 # We update the latest of our prev_states with the network output
                 if scale_y:
 
-                    last_prev_state = prev_states.select_dim("timestep", -1)
-                    if self.noise_strategy in ["CondLayerNorm", "forcing"]:
-                        last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
+                    # last_prev_state = prev_states.select_dim("timestep", -1)
+                    # if self.noise_strategy in ["CondLayerNorm", "forcing"]:
+                    #     last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
                     
                     # last_prev_state = last_smoothed
                     # if self.noise_strategy in ["CondLayerNorm", "forcing"]:
                     #     last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
 
 
-                    predicted_state = (
-                        # select the last timestep
-                        last_prev_state
-                        + y * step_diff_std
-                        + step_diff_mean
-                    )
+                    # predicted_state = (
+                    #     # select the last timestep
+                    #     last_prev_state
+                    #     + y * step_diff_std
+                    #     + step_diff_mean
+                    # )
 
-                    # predicted_state = y
+                    predicted_state = y
                 else:
                     predicted_state = prev_states.select_dim("timestep", -1) + y
 
