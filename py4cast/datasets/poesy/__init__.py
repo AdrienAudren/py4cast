@@ -232,7 +232,8 @@ class PoesyAccessor(DataAccessor):
         lats: np.ndarray,
     ) -> np.ndarray:
         # crop arpege data to arome domain:
-        grid_coords = cls.get_grid_coords(param, grid="EURW1S40")
+        # grid_coords = cls.get_grid_coords(param, grid="EURW1S40")
+        grid_coords = [52.77499999999913, 39.99999999999986, -5.999999999999915, 9.975000000000314]
         # Mask ARPEGE data to AROME bounding box
         mask_lon = (lons >= grid_coords[2]) & (lons <= grid_coords[3])
         mask_lat = (lats >= grid_coords[1]) & (lats <= grid_coords[0])
