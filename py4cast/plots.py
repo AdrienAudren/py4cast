@@ -714,8 +714,8 @@ class SpreadTimestepPlot(MapPlot):
                 mean = obj.stats.to_list("mean", prediction.feature_names).to(
                     pred, non_blocking=True
                 )
-                prediction_rescaled = pred * std + mean
-                target_rescaled = targ * std + mean
+                prediction_rescaled = pred #* std + mean
+                target_rescaled = targ #* std + mean
 
             # # Compute spread on cpu
             # prediction_std = torch.from_numpy(prediction_rescaled.cpu().numpy().std(axis=0))
@@ -725,8 +725,8 @@ class SpreadTimestepPlot(MapPlot):
             prediction_std = std_dict["preds"]
             target_std = std_dict["pearo"]
             
-            var_vmin = target_std.flatten(0, 2).min(dim=0)[0].cpu().numpy()
-            var_vmax = target_std.flatten(0, 2).max(dim=0)[0].cpu().numpy()
+            var_vmin = np.array([0, 0, 0, 0, 0, 0]) #prediction_std.flatten(0, 2).min(dim=0)[0].cpu().numpy()
+            var_vmax = np.array([1, 1, 1, 1, 1, 1]) #prediction_std.flatten(0, 2).max(dim=0)[0].cpu().numpy()
             var_vranges = list(zip(var_vmin, var_vmax))
 
             feature_names = (
