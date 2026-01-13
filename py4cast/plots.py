@@ -728,8 +728,14 @@ class SpreadTimestepPlot(MapPlot):
             if self.count == 0:
                 np.save(f"{env_path}/pearo_std_map.npy", target_std.cpu().numpy())
             
-            var_vmin = prediction_std.flatten(0, 2).min(dim=0)[0].cpu().numpy() # var_vmin = np.array([0, 0, 0, 0, 0, 0])
-            var_vmax = prediction_std.flatten(0, 2).max(dim=0)[0].cpu().numpy() # var_vmax = np.array([1, 1, 1, 1, 1, 1])
+            var_vmin_prediction = prediction_std.flatten(0, 2).min(dim=0)[0].cpu().numpy() # var_vmin = np.array([0, 0, 0, 0, 0, 0])
+            var_vmax_prediction = prediction_std.flatten(0, 2).max(dim=0)[0].cpu().numpy() # var_vmax = np.array([1, 1, 1, 1, 1, 1])
+            var_vmin_target = target_std.flatten(0, 2).min(dim=0)[0].cpu().numpy()
+            var_vmax_target = target_std.flatten(0, 2).max(dim=0)[0].cpu().numpy()
+            
+            var_vmin = np.minimum(var_vmin_prediction, var_vmin_target)
+            var_vmax = np.maximum(var_vmax_prediction, var_vmax_target)
+            
             var_vranges = list(zip(var_vmin, var_vmax))
 
             feature_names = (
