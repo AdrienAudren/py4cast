@@ -792,9 +792,9 @@ class MetricMapSpread(Metric):
         # Ensure concatenating into a single tensor along device dimension
         preds = dim_zero_cat(self.preds)
         targets = dim_zero_cat(self.targets)
-        # Spread computation
-        preds_std = preds.std(dim=0)
-        targets_std = targets.std(dim=0)
+        # Spread (unbiased) computation
+        preds_std = preds.std(dim=0, ddof=1)
+        targets_std = targets.std(dim=0, ddof=1)
         # Reconvert to initial type then reset metric's state
         self.preds = []
         self.targets = []
