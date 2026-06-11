@@ -121,6 +121,10 @@ class PlDataModule(LightningDataModule):
     @property
     def train_dataset_info(self) -> DatasetInfo:
         return self.train_ds.dataset_info
+    
+    @property
+    def test_dataset_info(self) -> DatasetInfo:
+        return self.test_ds.dataset_info
 
     @property
     def infer_ds(self):
@@ -182,6 +186,7 @@ class AutoRegressiveLightning(LightningModule):
         settings_init_args: dict,
         # args linked from trainer and datamodule
         dataset_info,  # Don't put type hint here or CLI doesn't work
+        test_dataset_info, # Don't put type hint here or CLI doesn't work
         len_train_loader: int,
         infer_ds,
         dataset_name: str = "dummy",
@@ -219,6 +224,7 @@ class AutoRegressiveLightning(LightningModule):
         self.dataset_name = dataset_name
         self.dataset_conf = dataset_conf
         self.dataset_info = dataset_info
+        self.test_dataset_info = test_dataset_info
         self.batch_size = batch_size
         self.noise_members = noise_members
         self.noise_strategy = noise_strategy
