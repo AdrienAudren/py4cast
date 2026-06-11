@@ -31,7 +31,7 @@ from py4cast.datasets import get_datasets
 from py4cast.datasets.base import DatasetInfo, ItemBatch, NamedTensor, Statics
 from py4cast.io.outputs import GribSavingSettings, save_named_tensors_to_grib
 from py4cast.losses import ScaledLoss, WeightedLoss, MultiScaleLoss
-from py4cast.metrics import MetricACC, MetricPSDK, MetricPSDKdownscaling, MetricPSDKperLeadtimes, MetricPSDVar, MetricSpread, MetricMapSpread, MetricBias, MetricSquaredError, MetricUnbiasedVariance, MetricCRPS
+from py4cast.metrics import MetricACC, MetricES, MetricPSDK, MetricPSDKdownscaling, MetricPSDKperLeadtimes, MetricPSDVar, MetricSpread, MetricMapSpread, MetricBias, MetricSquaredError, MetricUnbiasedVariance, MetricCRPS, MetricVario
 from py4cast.models import build_model_from_settings, get_model_kls_and_settings
 from py4cast.models import registry as model_registry
 from py4cast.plots import (
@@ -370,6 +370,8 @@ class AutoRegressiveLightning(LightningModule):
             self.error_metric = MetricSquaredError(self.dataset_info, pred_step=max_pred_step+1)
             self.unbVar_metric = MetricUnbiasedVariance(self.dataset_info, pred_step=max_pred_step+1)
             self.crps_metric = MetricCRPS(self.dataset_info, pred_step=max_pred_step+1)
+            self.ES_metric = MetricES(self.dataset_info, pred_step=max_pred_step+1)
+            self.vario_metric = MetricVario(self.dataset_info, pred_step=max_pred_step+1)
             self.configure_loggers()
 
     def configure_loggers(self):
@@ -1612,6 +1614,8 @@ class AutoRegressiveLightning(LightningModule):
                     error_metric=self.error_metric,
                     unbVar_metric=self.unbVar_metric,
                     crps_metric=self.crps_metric,
+                    ES_metric=self.ES_metric,
+                    vario_metric=self.vario_metric,
                     dataset_name = self.dataset_info.name,
                     num_samples_to_plot=1,
                     num_features_to_plot=6,

@@ -174,7 +174,7 @@ def plot_prediction_downscaling(
 
     # Plot pred and target
     for ax, data in zip(axes, (target, lowres, pred)):
-        ax.coastlines()  # Add coastline outlines
+        # ax.coastlines()  # Add coastline outlines
         # data_grid = data.reshape(*grid_shape).cpu().numpy()
         im = ax.imshow(
             data.cpu().numpy(),
@@ -238,7 +238,7 @@ def plot_prediction_tp(
 
     # Plot pred and target
     for ax, data in zip(axes, (target, pred)):
-        ax.coastlines()
+        # ax.coastlines()
 
         im = ax.imshow(
             data.cpu().numpy(),
@@ -250,7 +250,7 @@ def plot_prediction_tp(
         )
 
     # Titles
-    axes[0].set_title("Ground Truth", size=15)
+    axes[0].set_title("PEARO", size=15)
     axes[1].set_title("Prediction", size=15)
 
     # Colorbar
@@ -293,7 +293,7 @@ def plot_prediction(
 
     # Plot pred and target
     for ax, data in zip(axes, (target, pred)):
-        ax.coastlines()  # Add coastline outlines
+        # ax.coastlines()  # Add coastline outlines
         # data_grid = data.reshape(*grid_shape).cpu().numpy()
         im = ax.imshow(
             data.cpu().numpy(),
@@ -306,7 +306,7 @@ def plot_prediction(
         )
 
     # Ticks and labels
-    axes[0].set_title("Ground Truth", size=15)
+    axes[0].set_title("PEARO", size=15)
     axes[1].set_title("Prediction", size=15)
     cbar = fig.colorbar(im, aspect=30)
     cbar.ax.tick_params(labelsize=10)
@@ -357,7 +357,7 @@ def plot_spread_prediction_(
 
     # Plot target and prediction
     for ax, data in zip(axes, (target, pred)):
-        ax.coastlines()
+        # ax.coastlines()
 
         im = ax.imshow(
             data.cpu().numpy(),
@@ -412,7 +412,7 @@ def plot_spread_prediction(
 
     # Plot pred and target
     for ax, data in zip(axes, (target, pred)):
-        ax.coastlines()  # Add coastline outlines
+        # ax.coastlines()  # Add coastline outlines
         # data_grid = data.reshape(*grid_shape).cpu().numpy()
         im = ax.imshow(
             data.cpu().numpy(),
@@ -529,7 +529,7 @@ def plot_spatial_error(
         figsize=(5, 4.8), subplot_kw={"projection": domain_info.projection}
     )
 
-    ax.coastlines()  # Add coastline outlines
+    # ax.coastlines()  # Add coastline outlines
     im = ax.imshow(
         error.cpu().numpy(),
         origin="lower",
@@ -917,39 +917,24 @@ class SpreadTimestepPlot(MapPlot):
                 prediction_rescaled = pred * std + mean
                 target_rescaled = targ * std + mean
 
-            # # Compute spread on cpu
-            # prediction_std = torch.from_numpy(prediction_rescaled.cpu().numpy().std(axis=0))
-            # target_std = torch.from_numpy(target_rescaled.cpu().numpy().std(axis=0))
             self.metric.update(prediction_rescaled, target_rescaled)
             std_dict = self.metric.compute(prefix="test")
             prediction_std = std_dict["preds"]
+            target_std = std_dict["pearo"]
             
+            # save numpy target std
             env_path = os.environ["PEARO_STD_MAPS"]
-            target_std = np.load(f"{env_path}/pearo_std_map.npy")
-            target_std = torch.from_numpy(target_std).to(prediction_std.device) #[::6]
+            if self.count == 0:
+                np.save(f"{env_path}/pearo_std_map.npy", target_std.cpu().numpy())
+            
+            prediction_var_vmin = prediction_std.flatten(0, 2).min(dim=0)[0].cpu().numpy() 
+            prediction_var_vmax = prediction_std.flatten(0, 2).max(dim=0)[0].cpu().numpy() 
+            target_var_vmin = target_std.flatten(0, 2).min(dim=0)[0].cpu().numpy()
+            target_var_vmax = target_std.flatten(0, 2).max(dim=0)[0].cpu().numpy()
 
-            
-            # standardize on the fly
-            # prediction_std = (prediction_std - prediction_std.std(dim=(1,2), keepdim=True)) / prediction_std.std(dim=(1,2), keepdim=True)
-            # target_std = (target_std - target_std.std(dim=(1,2), keepdim=True)) / target_std.std(dim=(1,2), keepdim=True)
-            
-            # divide by max value on the fly
-            prediction_std = prediction_std / prediction_std.amax(dim=(1, 2), keepdim=True)
-            target_std = target_std / target_std.amax(dim=(1, 2), keepdim=True)
-            
-            
-            # prediction_var_vmin = prediction_std.flatten(0, 2).min(dim=0)[0].cpu().numpy() # var_vmin = np.array([0, 0, 0, 0, 0, 0])
-            # prediction_var_vmax = prediction_std.flatten(0, 2).max(dim=0)[0].cpu().numpy() # var_vmax = np.array([1, 1, 1, 1, 1, 1])
-            # target_var_vmin = target_std.flatten(0, 2).min(dim=0)[0].cpu().numpy() # target_var_vmin = np.array([0, 0, 0, 0, 0, 0])
-            # target_var_vmax = target_std.flatten(0, 2).max(dim=0)[0].cpu().numpy() # target_var_vmax = np.array([1, 1, 1, 1, 1, 1])
-            
-            
-            var_vmin = np.array([0, 0, 0, 0, 0, 0])
-            var_vmax = np.array([1, 1, 1, 1, 1, 1])
-            
-            # var_vmin = np.minimum(prediction_var_vmin, target_var_vmin)
-            # var_vmax = target_var_vmax
-            # var_vmax = np.maximum(target_var_vmax, prediction_var_vmax)
+            var_vmin = np.minimum(prediction_var_vmin, target_var_vmin)
+            var_vmax = target_var_vmax
+            var_vmax = np.maximum(target_var_vmax, prediction_var_vmax)
 
             var_vranges = list(zip(var_vmin, var_vmax))
 
@@ -1127,16 +1112,22 @@ class EnScorePlot(MapPlot):
         self.dataset_name = dataset_name
 
         self.crps_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        self.crps_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
         
         self.ES_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test))
+        self.ES_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test))
 
         self.bias_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        self.bias_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
 
         self.mean_unbVar_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        self.mean_unbVar_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
         
         self.mean_error_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        self.mean_error_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
 
         self.vario_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test))
+        self.vario_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test))
         
     def update(
         self,
@@ -1210,16 +1201,22 @@ class EnScorePlot(MapPlot):
             if obj.trainer.is_global_zero:
 
                 self.crps_pred[self.plotted_examples] = crps_dict["preds"].mean(dim=(1, 2)).cpu().numpy() # mean over spatial dimensions
+                self.crps_pearo[self.plotted_examples] = crps_dict["pearo"].mean(dim=(1, 2)).cpu().numpy()
                 
                 self.vario_pred[self.plotted_examples] = vario_dict["preds"].mean(dim=(1, 2)).cpu().numpy() # mean over spatial dimensions
+                self.vario_pearo[self.plotted_examples] = vario_dict["pearo"].mean(dim=(1, 2)).cpu().numpy()
                 
                 self.ES_pred[self.plotted_examples] = ES_dict["preds"].cpu().numpy()
+                self.ES_pearo[self.plotted_examples] = ES_dict["pearo"].cpu().numpy()
 
                 self.mean_unbVar_pred[self.plotted_examples] = unbVar_dict["preds"].cpu().numpy()
+                self.mean_unbVar_pearo[self.plotted_examples] = unbVar_dict["pearo"].cpu().numpy()
 
                 self.mean_error_pred[self.plotted_examples] = error_dict["preds"].cpu().numpy()
+                self.mean_error_pearo[self.plotted_examples] = error_dict["pearo"].cpu().numpy()
 
                 self.bias_pred[self.plotted_examples] = bias_dict["preds"].cpu().numpy()
+                self.bias_pearo[self.plotted_examples] = bias_dict["pearo"].cpu().numpy()
 
             self.plotted_examples += 1
 
@@ -1229,18 +1226,25 @@ class EnScorePlot(MapPlot):
 
                 # Average numpy arrays over all examples
                 mean_crps_pred = np.mean(self.crps_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
+                mean_crps_pearo = np.mean(self.crps_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
                 
                 mean_vario_pred = np.mean(self.vario_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
+                mean_vario_pearo = np.mean(self.vario_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
                 
                 mean_ES_pred = np.mean(self.ES_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test)
-                
+                mean_ES_pearo = np.mean(self.ES_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test)
+
                 mean_unbVar_pred = np.sqrt(np.mean(self.mean_unbVar_pred[:self.plotted_examples], axis=0))
-                
+                mean_unbVar_pearo = np.sqrt(np.mean(self.mean_unbVar_pearo[:self.plotted_examples], axis=0))
+
                 mean_rmse_pred = np.sqrt(np.mean(self.mean_error_pred[:self.plotted_examples], axis=0))
+                mean_rmse_pearo = np.sqrt(np.mean(self.mean_error_pearo[:self.plotted_examples], axis=0))
 
                 ssr_pred = np.sqrt(17/16)*np.divide(mean_unbVar_pred, mean_rmse_pred)
+                ssr_pearo = np.sqrt(17/16)*np.divide(mean_unbVar_pearo, mean_rmse_pearo)
 
                 mean_bias_pred = np.mean(self.bias_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
+                mean_bias_pearo = np.mean(self.bias_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
 
                 # Plot figs only on main process
                 for metric_name in ["crps", "ES", "bias", "spread_error_ratio", "spread", "error", "vario"]:
@@ -1249,6 +1253,7 @@ class EnScorePlot(MapPlot):
                             obj,
                             metric_name,
                             mean_crps_pred,
+                            mean_crps_pearo,
                             feature_names,
                         )
                     elif metric_name == "vario":
@@ -1256,6 +1261,7 @@ class EnScorePlot(MapPlot):
                             obj,
                             metric_name,
                             mean_vario_pred,
+                            mean_vario_pearo,
                             feature_names,
                         )
                     elif metric_name == "ES":
@@ -1263,6 +1269,7 @@ class EnScorePlot(MapPlot):
                             obj,
                             metric_name,
                             mean_ES_pred,
+                            mean_ES_pearo,
                             feature_names,
                         )
                     elif metric_name == "bias":
@@ -1270,6 +1277,7 @@ class EnScorePlot(MapPlot):
                             obj,
                             metric_name,
                             mean_bias_pred,
+                            mean_bias_pearo,
                             feature_names,
                         )
                     elif metric_name == "spread_error_ratio":
@@ -1277,6 +1285,7 @@ class EnScorePlot(MapPlot):
                             obj,
                             metric_name,
                             ssr_pred,
+                            ssr_pearo,
                             feature_names,
                         )
                     elif metric_name == "spread":
@@ -1284,6 +1293,7 @@ class EnScorePlot(MapPlot):
                             obj,
                             metric_name,
                             mean_unbVar_pred,
+                            mean_unbVar_pearo,
                             feature_names,
                         )
                     elif metric_name == "error":
@@ -1291,6 +1301,7 @@ class EnScorePlot(MapPlot):
                             obj,
                             metric_name,
                             mean_rmse_pred,
+                            mean_rmse_pearo,
                             feature_names,
                         )
 
@@ -1299,6 +1310,7 @@ class EnScorePlot(MapPlot):
         obj: "AutoRegressiveLightning",
         metric_name: Literal["crps", "ES", "bias", "spread_error_ratio", "spread", "error", "vario"],
         mean_metric_preds: np.ndarray,  # (pred_steps, features)
+        mean_metric_pearo: np.ndarray,  # (pred_steps, features)
         feature_names: List[str],
     ) -> None:
 
@@ -1323,6 +1335,9 @@ class EnScorePlot(MapPlot):
             plt.figure(figsize=(8, 6))
             sns.lineplot(x=lead_times, y=mean_metric_preds, marker="o", label="preds", linewidth=2.5, color="purple")
             np.save(self.save_path / f"preds_{metric_name}_plot_per_param.npy", mean_metric_preds)
+            
+            sns.lineplot(x=lead_times, y=mean_metric_pearo, marker="o", label="pearo", linewidth=2.5, color="green")
+            np.save(self.save_path / f"pearo_{metric_name}_plot_per_param.npy", mean_metric_pearo)
 
             # Labels and title
             plt.xlabel("Lead Time")
@@ -1361,6 +1376,9 @@ class EnScorePlot(MapPlot):
                 plt.figure(figsize=(8, 6))
                 sns.lineplot(x=lead_times, y=mean_metric_preds[:, var_i], marker="o", label="preds", linewidth=2.5, color="purple")
                 np.save(self.save_path / f"preds_{metric_name}_plot_per_param_{var_name}.npy", mean_metric_preds[:, var_i])
+                
+                sns.lineplot(x=lead_times, y=mean_metric_pearo[:, var_i], marker="o", label="pearo", linewidth=2.5, color="green")
+                np.save(self.save_path / f"pearo_{metric_name}_plot_per_param_{var_name}.npy", mean_metric_pearo[:, var_i])
 
                 # Labels and title
                 plt.xlabel("Lead Time")
