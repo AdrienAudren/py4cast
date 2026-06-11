@@ -4,13 +4,14 @@ from collections import defaultdict
 from copy import deepcopy, error
 from dataclasses import dataclass
 from pathlib import Path
-import os
 from typing import TYPE_CHECKING, Dict, List, Tuple, Union, Literal
-
+from datetime import timedelta
 import cartopy
 import einops
+import os
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.colors as colors
 import seaborn as sns
 from scipy.stats import wasserstein_distance
 import numpy as np
@@ -150,7 +151,7 @@ def plot_prediction_downscaling(
     domain_info: DomainInfo,
     title=None,
     vrange=None,
-    cmap="plasma",
+    cmap="Spectral_r",
 ):
     """
     Plot example prediction and grond truth.
@@ -173,7 +174,7 @@ def plot_prediction_downscaling(
 
     # Plot pred and target
     for ax, data in zip(axes, (target, lowres, pred)):
-        # ax.coastlines()  # Add coastline outlines
+        ax.coastlines()  # Add coastline outlines
         # data_grid = data.reshape(*grid_shape).cpu().numpy()
         im = ax.imshow(
             data.cpu().numpy(),
@@ -189,6 +190,70 @@ def plot_prediction_downscaling(
     axes[0].set_title("AROME", size=15)
     axes[1].set_title("ARPEGE", size=15)
     axes[2].set_title("8 steps Flow Matching", size=15)
+    cbar = fig.colorbar(im, aspect=30)
+    cbar.ax.tick_params(labelsize=10)
+
+    if title:
+        fig.suptitle(title, size=20)
+
+    return fig
+
+@matplotlib.rc_context(fractional_plot_bundle(1))
+def plot_prediction_tp(
+    pred,
+    target,
+    interior_mask,
+    domain_info: DomainInfo,
+    title=None,
+    vrange=None,
+    cmap="Spectral_r",
+):
+    """
+    Plot example prediction and ground truth.
+    Each has shape (N_grid,)
+    """
+
+    # Get common scale for values
+    if vrange is None:
+        vmin = min(vals.min().cpu().item() for vals in (pred, target))
+        vmax = max(vals.max().cpu().item() for vals in (pred, target))
+    else:
+        vmin, vmax = vrange
+
+    # Ensure zero values are rendered as white
+    cmap_obj = plt.get_cmap(cmap).copy()
+    cmap_obj.set_under("white")
+
+    # Small positive threshold so exact zeros become "under"
+    norm = colors.Normalize(vmin=max(vmin, 1.0), vmax=vmax)
+
+    # Faded border region
+    pixel_alpha = interior_mask.clamp(0.7, 1).cpu().numpy()
+
+    fig, axes = plt.subplots(
+        1, 2,
+        figsize=(13, 7),
+        subplot_kw={"projection": domain_info.projection},
+    )
+
+    # Plot pred and target
+    for ax, data in zip(axes, (target, pred)):
+        ax.coastlines()
+
+        im = ax.imshow(
+            data.cpu().numpy(),
+            origin="lower",
+            extent=domain_info.grid_limits,
+            alpha=pixel_alpha,
+            cmap=cmap_obj,
+            norm=norm,
+        )
+
+    # Titles
+    axes[0].set_title("Ground Truth", size=15)
+    axes[1].set_title("Prediction", size=15)
+
+    # Colorbar
     cbar = fig.colorbar(im, aspect=30)
     cbar.ax.tick_params(labelsize=10)
 
@@ -228,7 +293,7 @@ def plot_prediction(
 
     # Plot pred and target
     for ax, data in zip(axes, (target, pred)):
-        # ax.coastlines()  # Add coastline outlines
+        ax.coastlines()  # Add coastline outlines
         # data_grid = data.reshape(*grid_shape).cpu().numpy()
         im = ax.imshow(
             data.cpu().numpy(),
@@ -242,6 +307,125 @@ def plot_prediction(
 
     # Ticks and labels
     axes[0].set_title("Ground Truth", size=15)
+    axes[1].set_title("Prediction", size=15)
+    cbar = fig.colorbar(im, aspect=30)
+    cbar.ax.tick_params(labelsize=10)
+
+    if title:
+        fig.suptitle(title, size=20)
+
+    return fig
+
+@matplotlib.rc_context(fractional_plot_bundle(1))
+def plot_spread_prediction_(
+    pred,
+    target,
+    interior_mask,
+    domain_info: DomainInfo,
+    title=None,
+    vrange=None,
+    cmap="Spectral",
+):
+    """
+    Plot example prediction and ground truth.
+    Each has shape (N_grid,)
+    """
+
+    # Get common scale for values
+    if vrange is None:
+        vmin = min(vals.min().cpu().item() for vals in (pred, target))
+        vmax = max(vals.max().cpu().item() for vals in (pred, target))
+    else:
+        vmin, vmax = vrange
+
+    # Make zero values appear white
+    cmap_obj = plt.get_cmap(cmap).copy()
+    cmap_obj.set_under("white")
+
+    # Exact zeros fall below vmin
+    norm = colors.Normalize(vmin=max(vmin, 1.0), vmax=vmax)
+
+    # Faded border region
+    pixel_alpha = interior_mask.clamp(0.7, 1).cpu().numpy()
+
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(13, 7),
+        subplot_kw={"projection": domain_info.projection},
+    )
+
+    # Plot target and prediction
+    for ax, data in zip(axes, (target, pred)):
+        ax.coastlines()
+
+        im = ax.imshow(
+            data.cpu().numpy(),
+            origin="lower",
+            extent=domain_info.grid_limits,
+            alpha=pixel_alpha,
+            cmap=cmap_obj,
+            norm=norm,
+        )
+
+    # Titles
+    axes[0].set_title("PEARO", size=15)
+    axes[1].set_title("Prediction", size=15)
+
+    # Colorbar
+    cbar = fig.colorbar(im, aspect=30)
+    cbar.ax.tick_params(labelsize=10)
+
+    if title:
+        fig.suptitle(title, size=20)
+
+    return fig
+
+@matplotlib.rc_context(fractional_plot_bundle(1))
+def plot_spread_prediction(
+    pred,
+    target,
+    interior_mask,
+    domain_info: DomainInfo,
+    title=None,
+    vrange=None,
+    cmap="viridis",
+):
+    """
+    Plot example prediction and grond truth.
+    Each has shape (N_grid,)
+    """
+    # Get common scale for values
+    if vrange is None:
+        vmin = min(vals.min().cpu().item() for vals in (pred, target))
+        vmax = max(vals.max().cpu().item() for vals in (pred, target))
+    else:
+        vmin, vmax = vrange
+
+    # Set up masking of border region
+    # mask_reshaped = obs_mask.reshape(*grid_shape)
+    pixel_alpha = interior_mask.clamp(0.7, 1).cpu().numpy()  # Faded border region
+
+    fig, axes = plt.subplots(
+        1, 2, figsize=(13, 7), subplot_kw={"projection": domain_info.projection}
+    )
+
+    # Plot pred and target
+    for ax, data in zip(axes, (target, pred)):
+        ax.coastlines()  # Add coastline outlines
+        # data_grid = data.reshape(*grid_shape).cpu().numpy()
+        im = ax.imshow(
+            data.cpu().numpy(),
+            origin="lower",
+            extent=domain_info.grid_limits,
+            alpha=pixel_alpha,
+            vmin=vmin,
+            vmax=vmax,
+            cmap=cmap,
+        )
+
+    # Ticks and labels
+    axes[0].set_title("PEARO", size=15)
     axes[1].set_title("Prediction", size=15)
     cbar = fig.colorbar(im, aspect=30)
     cbar.ax.tick_params(labelsize=10)
@@ -345,7 +529,7 @@ def plot_spatial_error(
         figsize=(5, 4.8), subplot_kw={"projection": domain_info.projection}
     )
 
-    # ax.coastlines()  # Add coastline outlines
+    ax.coastlines()  # Add coastline outlines
     im = ax.imshow(
         error.cpu().numpy(),
         origin="lower",
@@ -442,7 +626,7 @@ class MapPlot(Plotter):
                 pred.shape[0], self.num_samples_to_plot - self.plotted_examples
             )
             # Rescale to original data scale
-            if obj.noise_strategy == "ddim":
+            if obj.noise_strategy == "diffusion":
                 # unnormalized [-1,1]
                 max_stat = obj.stats.to_list("max", prediction.feature_names).to(
                     pred, non_blocking=True
@@ -553,17 +737,32 @@ class PredictionTimestepPlot(MapPlot):
         # Prediction and target: (pred_steps, Nlat, Nlon, features)
         # Iterate over prediction horizon time steps
         paths_dict = defaultdict(list)
+        
+        base_dt = obj.test_dataset_info.start
+        
         for t_i, (pred_t, target_t) in enumerate(zip(prediction, target), start=1):
             # Create one figure per variable at this time step
             # This generate a matplotlib warning as more than 20 figures are plotted.
+            dt_i = base_dt + timedelta(hours=t_i)
+            
             units = [obj.dataset_info.units[name] for name in feature_names]
             var_figs = [
                 plot_prediction(
                     pred_t[:, :, var_i],
                     target_t[:, :, var_i],
                     obj.interior_2d[:, :, 0],
-                    title=f"{var_name} ({var_unit}), "
-                    f"t={t_i} ({obj.dataset_info.pred_step*t_i} h)",
+                    title=f"{var_name} ({var_unit})\n"
+                    f"[start: {base_dt}] "
+                    f"t+{t_i}h {dt_i}",
+                    vrange=var_vrange,
+                    domain_info=obj.dataset_info.domain_info,
+                ) if var_name != "aro_tp_0m" else plot_prediction_tp(
+                    pred_t[:, :, var_i],
+                    target_t[:, :, var_i],
+                    obj.interior_2d[:, :, 0],
+                    title=f"{var_name} ({var_unit})\n"
+                    f"[start: {base_dt}] "
+                    f"t+{t_i}h {dt_i}",
                     vrange=var_vrange,
                     domain_info=obj.dataset_info.domain_info,
                 )
@@ -698,7 +897,7 @@ class SpreadTimestepPlot(MapPlot):
 
         if self.plotted_examples < self.num_samples_to_plot:
             # Rescale to original data scale
-            if obj.noise_strategy == "ddim":
+            if obj.noise_strategy == "diffusion":
                 # unnormalized [-1,1]
                 max_stat = obj.stats.to_list("max", prediction.feature_names).to(
                     pred, non_blocking=True
@@ -718,24 +917,40 @@ class SpreadTimestepPlot(MapPlot):
                 prediction_rescaled = pred * std + mean
                 target_rescaled = targ * std + mean
 
+            # # Compute spread on cpu
+            # prediction_std = torch.from_numpy(prediction_rescaled.cpu().numpy().std(axis=0))
+            # target_std = torch.from_numpy(target_rescaled.cpu().numpy().std(axis=0))
             self.metric.update(prediction_rescaled, target_rescaled)
             std_dict = self.metric.compute(prefix="test")
             prediction_std = std_dict["preds"]
-            target_std = std_dict["pearo"]
             
-            # save numpy target std
             env_path = os.environ["PEARO_STD_MAPS"]
-            if self.count == 0:
-                np.save(f"{env_path}/pearo_std_map.npy", target_std.cpu().numpy())
+            target_std = np.load(f"{env_path}/pearo_std_map.npy")
+            target_std = torch.from_numpy(target_std).to(prediction_std.device) #[::6]
+
             
-            var_vmin_prediction = prediction_std.flatten(0, 2).min(dim=0)[0].cpu().numpy() # var_vmin = np.array([0, 0, 0, 0, 0, 0])
-            var_vmax_prediction = prediction_std.flatten(0, 2).max(dim=0)[0].cpu().numpy() # var_vmax = np.array([1, 1, 1, 1, 1, 1])
-            var_vmin_target = target_std.flatten(0, 2).min(dim=0)[0].cpu().numpy()
-            var_vmax_target = target_std.flatten(0, 2).max(dim=0)[0].cpu().numpy()
+            # standardize on the fly
+            # prediction_std = (prediction_std - prediction_std.std(dim=(1,2), keepdim=True)) / prediction_std.std(dim=(1,2), keepdim=True)
+            # target_std = (target_std - target_std.std(dim=(1,2), keepdim=True)) / target_std.std(dim=(1,2), keepdim=True)
             
-            var_vmin = np.minimum(var_vmin_prediction, var_vmin_target)
-            var_vmax = np.maximum(var_vmax_prediction, var_vmax_target)
+            # divide by max value on the fly
+            prediction_std = prediction_std / prediction_std.amax(dim=(1, 2), keepdim=True)
+            target_std = target_std / target_std.amax(dim=(1, 2), keepdim=True)
             
+            
+            # prediction_var_vmin = prediction_std.flatten(0, 2).min(dim=0)[0].cpu().numpy() # var_vmin = np.array([0, 0, 0, 0, 0, 0])
+            # prediction_var_vmax = prediction_std.flatten(0, 2).max(dim=0)[0].cpu().numpy() # var_vmax = np.array([1, 1, 1, 1, 1, 1])
+            # target_var_vmin = target_std.flatten(0, 2).min(dim=0)[0].cpu().numpy() # target_var_vmin = np.array([0, 0, 0, 0, 0, 0])
+            # target_var_vmax = target_std.flatten(0, 2).max(dim=0)[0].cpu().numpy() # target_var_vmax = np.array([1, 1, 1, 1, 1, 1])
+            
+            
+            var_vmin = np.array([0, 0, 0, 0, 0, 0])
+            var_vmax = np.array([1, 1, 1, 1, 1, 1])
+            
+            # var_vmin = np.minimum(prediction_var_vmin, target_var_vmin)
+            # var_vmax = target_var_vmax
+            # var_vmax = np.maximum(target_var_vmax, prediction_var_vmax)
+
             var_vranges = list(zip(var_vmin, var_vmax))
 
             feature_names = (
@@ -776,20 +991,26 @@ class SpreadTimestepPlot(MapPlot):
         # Prediction and target: (pred_steps, Nlat, Nlon, features)
         # Iterate over prediction horizon time steps
         paths_dict = defaultdict(list)
+        
+        base_dt = obj.test_dataset_info.start
+        
         for t_i, (pred_t, target_t) in enumerate(zip(prediction, target), start=1):
             # Create one figure per variable at this time step
             # This generate a matplotlib warning as more than 20 figures are plotted.
+            dt_i = base_dt + timedelta(hours=t_i)
+            
             units = [obj.dataset_info.units[name] for name in feature_names]
             var_figs = [
-                plot_prediction(
+                plot_spread_prediction(
                     pred_t[:, :, var_i],
                     target_t[:, :, var_i],
                     obj.interior_2d[:, :, 0],
-                    title=f"{var_name} ({var_unit}), "
-                    f"t={t_i} ({obj.dataset_info.pred_step*t_i} h)",
+                    title=f"{var_name} 16-member spread\n"
+                    f"[start: {base_dt}] "
+                    f"t+{t_i}h {dt_i}",
                     vrange=var_vrange,
                     domain_info=obj.dataset_info.domain_info,
-                    cmap="viridis",
+                    cmap="RdPu",
                 )
                 for var_i, (var_name, var_unit, var_vrange) in enumerate(
                     zip(feature_names, units, var_vranges)
@@ -882,6 +1103,8 @@ class EnScorePlot(MapPlot):
         error_metric: Metric,
         unbVar_metric: Metric,
         crps_metric: Metric,
+        ES_metric: Metric,
+        vario_metric: Metric,
         dataset_name: str,
         num_samples_to_plot: int,
         num_features_to_plot: Union[None, int] = None,
@@ -899,20 +1122,21 @@ class EnScorePlot(MapPlot):
         self.error_metric = error_metric
         self.unbVar_metric = unbVar_metric
         self.crps_metric = crps_metric
-
+        self.ES_metric = ES_metric
+        self.vario_metric = vario_metric
         self.dataset_name = dataset_name
 
-        self.crps_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
         self.crps_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        
+        self.ES_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test))
 
-        self.bias_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
         self.bias_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
 
-        self.mean_unbVar_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
-        self.mean_error_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
         self.mean_unbVar_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        
         self.mean_error_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
 
+        self.vario_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test))
         
     def update(
         self,
@@ -938,7 +1162,7 @@ class EnScorePlot(MapPlot):
 
         if self.plotted_examples < self.num_samples_to_plot: 
             # Rescale to original data scale
-            if obj.noise_strategy == "ddim":
+            if obj.noise_strategy == "diffusion":
                 # unnormalized [-1,1]
                 max_stat = obj.stats.to_list("max", prediction.feature_names).to(
                     pred, non_blocking=True
@@ -959,16 +1183,22 @@ class EnScorePlot(MapPlot):
                 target_rescaled = targ * std + mean
 
             self.crps_metric.update(prediction_rescaled, target_rescaled)
-            crps_dict = self.crps_metric.compute(num_batch=self.plotted_examples, prefix="test")
+            crps_dict = self.crps_metric.compute(prefix="test")
+            
+            self.ES_metric.update(prediction_rescaled, target_rescaled)
+            ES_dict = self.ES_metric.compute(prefix="test")
 
             self.unbVar_metric.update(prediction_rescaled, target_rescaled)
             unbVar_dict = self.unbVar_metric.compute(prefix="test")
             
             self.error_metric.update(prediction_rescaled, target_rescaled)
-            error_dict = self.error_metric.compute(num_batch=self.plotted_examples, prefix="test")
+            error_dict = self.error_metric.compute(prefix="test")
 
             self.bias_metric.update(prediction_rescaled, target_rescaled)
-            bias_dict = self.bias_metric.compute(num_batch=self.plotted_examples, prefix="test")
+            bias_dict = self.bias_metric.compute(prefix="test")
+
+            self.vario_metric.update(prediction_rescaled, target_rescaled)
+            vario_dict = self.vario_metric.compute(prefix="test")
 
             feature_names = (
                 prediction.feature_names[: self.num_features_to_plot]
@@ -979,16 +1209,16 @@ class EnScorePlot(MapPlot):
 
             if obj.trainer.is_global_zero:
 
-                self.crps_pearo[self.plotted_examples] = crps_dict["pearo"].mean(dim=(1, 2)).cpu().numpy()
-                self.crps_pred[self.plotted_examples] = crps_dict["preds"].mean(dim=(1, 2)).cpu().numpy()
+                self.crps_pred[self.plotted_examples] = crps_dict["preds"].mean(dim=(1, 2)).cpu().numpy() # mean over spatial dimensions
+                
+                self.vario_pred[self.plotted_examples] = vario_dict["preds"].mean(dim=(1, 2)).cpu().numpy() # mean over spatial dimensions
+                
+                self.ES_pred[self.plotted_examples] = ES_dict["preds"].cpu().numpy()
 
                 self.mean_unbVar_pred[self.plotted_examples] = unbVar_dict["preds"].cpu().numpy()
-                self.mean_unbVar_pearo[self.plotted_examples] = unbVar_dict["pearo"].cpu().numpy()
 
                 self.mean_error_pred[self.plotted_examples] = error_dict["preds"].cpu().numpy()
-                self.mean_error_pearo[self.plotted_examples] = error_dict["pearo"].cpu().numpy()
 
-                self.bias_pearo[self.plotted_examples] = bias_dict["pearo"].cpu().numpy()
                 self.bias_pred[self.plotted_examples] = bias_dict["preds"].cpu().numpy()
 
             self.plotted_examples += 1
@@ -998,35 +1228,47 @@ class EnScorePlot(MapPlot):
             if obj.trainer.is_global_zero:
 
                 # Average numpy arrays over all examples
-                mean_crps_pearo = np.mean(self.crps_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
                 mean_crps_pred = np.mean(self.crps_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
-
-                mean_unbVar_pearo = np.sqrt(np.mean(self.mean_unbVar_pearo[:self.plotted_examples], axis=0)) # shape (LT, self.num_features_to_plot)
-                mean_rmse_pearo = np.sqrt(np.mean(self.mean_error_pearo[:self.plotted_examples], axis=0))
+                
+                mean_vario_pred = np.mean(self.vario_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
+                
+                mean_ES_pred = np.mean(self.ES_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test)
+                
                 mean_unbVar_pred = np.sqrt(np.mean(self.mean_unbVar_pred[:self.plotted_examples], axis=0))
+                
                 mean_rmse_pred = np.sqrt(np.mean(self.mean_error_pred[:self.plotted_examples], axis=0))
 
-                ssr_pearo =  np.sqrt(17/16)*np.divide(mean_unbVar_pearo, mean_rmse_pearo) # shape (LT, self.num_features_to_plot)
                 ssr_pred = np.sqrt(17/16)*np.divide(mean_unbVar_pred, mean_rmse_pred)
 
-                mean_bias_pearo = np.mean(self.bias_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
                 mean_bias_pred = np.mean(self.bias_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
 
                 # Plot figs only on main process
-                for metric_name in ["crps", "bias", "spread_error_ratio", "error"]:
+                for metric_name in ["crps", "ES", "bias", "spread_error_ratio", "spread", "error", "vario"]:
                     if metric_name == "crps":
                         self.plot_curves(
                             obj,
                             metric_name,
-                            mean_crps_pearo,
                             mean_crps_pred,
+                            feature_names,
+                        )
+                    elif metric_name == "vario":
+                        self.plot_curves(
+                            obj,
+                            metric_name,
+                            mean_vario_pred,
+                            feature_names,
+                        )
+                    elif metric_name == "ES":
+                        self.plot_curves(
+                            obj,
+                            metric_name,
+                            mean_ES_pred,
                             feature_names,
                         )
                     elif metric_name == "bias":
                         self.plot_curves(
                             obj,
                             metric_name,
-                            mean_bias_pearo,
                             mean_bias_pred,
                             feature_names,
                         )
@@ -1034,15 +1276,20 @@ class EnScorePlot(MapPlot):
                         self.plot_curves(
                             obj,
                             metric_name,
-                            ssr_pearo,
                             ssr_pred,
+                            feature_names,
+                        )
+                    elif metric_name == "spread":
+                        self.plot_curves(
+                            obj,
+                            metric_name,
+                            mean_unbVar_pred,
                             feature_names,
                         )
                     elif metric_name == "error":
                         self.plot_curves(
                             obj,
                             metric_name,
-                            mean_rmse_pearo,
                             mean_rmse_pred,
                             feature_names,
                         )
@@ -1050,8 +1297,7 @@ class EnScorePlot(MapPlot):
     def plot_curves(
         self,
         obj: "AutoRegressiveLightning",
-        metric_name: Literal["crps", "bias", "spread_error_ratio", "error"],
-        mean_metric_pearo: np.ndarray,  # (pred_steps, features)
+        metric_name: Literal["crps", "ES", "bias", "spread_error_ratio", "spread", "error", "vario"],
         mean_metric_preds: np.ndarray,  # (pred_steps, features)
         feature_names: List[str],
     ) -> None:
@@ -1070,47 +1316,82 @@ class EnScorePlot(MapPlot):
         paths_dict = defaultdict(list)
         units = [obj.dataset_info.units[name] for name in feature_names]
         var_figs = []
-
-        for var_i, (var_name, var_unit) in enumerate(zip(feature_names, units)):
-
+        
+        if metric_name == "ES" or metric_name == "vario":
+            
             lead_times = np.arange(1, mean_metric_preds.shape[0] + 1)
             plt.figure(figsize=(8, 6))
-            sns.lineplot(x=lead_times, y=mean_metric_preds[:, var_i], marker="o", label="preds", linewidth=2.5, color="purple")
-            np.save(self.save_path / f"preds_{metric_name}_plot_per_param_{var_name}.npy", mean_metric_preds[:, var_i])
-
-            sns.lineplot(x=lead_times, y=mean_metric_pearo[:, var_i], marker="o", label="pearo", linewidth=2.5, color="green")
-            np.save(self.save_path / f"pearo_{metric_name}_plot_per_param_{var_name}.npy", mean_metric_pearo[:, var_i])
+            sns.lineplot(x=lead_times, y=mean_metric_preds, marker="o", label="preds", linewidth=2.5, color="purple")
+            np.save(self.save_path / f"preds_{metric_name}_plot_per_param.npy", mean_metric_preds)
 
             # Labels and title
             plt.xlabel("Lead Time")
             plt.ylabel(metric_name.upper())
-            plt.title(f"{var_name} {metric_name.upper()} Across Forecast Lead Times")
+            plt.title(f"{metric_name.upper()} Across Forecast Lead Times")
             plt.legend(loc="best", frameon=True)
             plt.tight_layout()
 
             var_figs.append(plt.gcf())
-        
-        # TODO : don't create all figs at once to avoid matplotlib warning
-        tensorboard = obj.logger.experiment
-        for var_name, fig in zip(feature_names, var_figs):
-            fig_name = f"{metric_name}_plot_per_param/{var_name}"
-            tensorboard.add_figure(fig_name, fig)
+            
+            tensorboard = obj.logger.experiment
+            fig_name = f"{metric_name}_plot_per_param/ES"
+            tensorboard.add_figure(fig_name, var_figs[0])
             fig_full_name = f"{fig_name}.png"
             if self.save_path is not None and self.save_path.exists():
                 dest_file = self.save_path / fig_full_name
-                paths_dict[var_name].append(dest_file)
+                paths_dict["ES"].append(dest_file)
                 dest_file.parent.mkdir(exist_ok=True)
-                fig.savefig(dest_file)
-
+                var_figs[0].savefig(dest_file)
+            
             if obj.mlflow_logger:
                 run_id = obj.mlflow_logger.version
                 obj.mlflow_logger.experiment.log_figure(
                     run_id=run_id,
-                    figure=fig,
+                    figure=var_figs[0],
                     artifact_file=f"figures/{fig_full_name}",
                 )
+                
+            plt.close(var_figs[0])
+        
+        else:
 
-            plt.close(fig)
+            for var_i, (var_name, var_unit) in enumerate(zip(feature_names, units)):
+
+                lead_times = np.arange(1, mean_metric_preds.shape[0] + 1)
+                plt.figure(figsize=(8, 6))
+                sns.lineplot(x=lead_times, y=mean_metric_preds[:, var_i], marker="o", label="preds", linewidth=2.5, color="purple")
+                np.save(self.save_path / f"preds_{metric_name}_plot_per_param_{var_name}.npy", mean_metric_preds[:, var_i])
+
+                # Labels and title
+                plt.xlabel("Lead Time")
+                plt.ylabel(metric_name.upper())
+                plt.title(f"{var_name} {metric_name.upper()} Across Forecast Lead Times")
+                plt.legend(loc="best", frameon=True)
+                plt.tight_layout()
+
+                var_figs.append(plt.gcf())
+            
+            # TODO : don't create all figs at once to avoid matplotlib warning
+            tensorboard = obj.logger.experiment
+            for var_name, fig in zip(feature_names, var_figs):
+                fig_name = f"{metric_name}_plot_per_param/{var_name}"
+                tensorboard.add_figure(fig_name, fig)
+                fig_full_name = f"{fig_name}.png"
+                if self.save_path is not None and self.save_path.exists():
+                    dest_file = self.save_path / fig_full_name
+                    paths_dict[var_name].append(dest_file)
+                    dest_file.parent.mkdir(exist_ok=True)
+                    fig.savefig(dest_file)
+
+                if obj.mlflow_logger:
+                    run_id = obj.mlflow_logger.version
+                    obj.mlflow_logger.experiment.log_figure(
+                        run_id=run_id,
+                        figure=fig,
+                        artifact_file=f"figures/{fig_full_name}",
+                    )
+
+                plt.close(fig)
 
     
     def plot_map(

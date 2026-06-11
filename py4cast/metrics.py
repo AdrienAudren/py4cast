@@ -758,7 +758,7 @@ class MetricSpread(Metric):
 
 class MetricMapSpread(Metric):
     """
-    Compute the spatially averaged, per pred step members spread for both the target (PE-AROME) and the prediction
+    Compute the spatial, per pred step members spread for both the target (PE-AROME) and the prediction
     """
 
     def __init__(self, dataset_info: DatasetInfo, pred_step: int = 0):
@@ -766,7 +766,6 @@ class MetricMapSpread(Metric):
         self.pred_step = pred_step 
         
         self.add_state("preds", default=[], dist_reduce_fx="cat")
-        self.add_state("targets", default=[], dist_reduce_fx="cat")
         # dist_reduce_fx="cat" because we gather multiple batch before computing std
 
         self.dataset_name = dataset_info.name
@@ -782,7 +781,6 @@ class MetricMapSpread(Metric):
             raise ValueError("preds and target must have the same shape")
 
         self.preds.append(pred)
-        self.targets.append(target)
 
     def compute(self, prefix: str = "val") -> dict:
         """
@@ -791,13 +789,11 @@ class MetricMapSpread(Metric):
         """
         # Ensure concatenating into a single tensor along device dimension
         preds = dim_zero_cat(self.preds)
-        targets = dim_zero_cat(self.targets)
-        # Spread (unbiased) computation
+        # Spread computation
         preds_std = preds.std(dim=0, correction=1)
-        targets_std = targets.std(dim=0, correction=1)
+        targets_std = torch.zeros_like(preds_std)  # obs spread is zero
         # Reconvert to initial type then reset metric's state
         self.preds = []
-        self.targets = []
         self.reset()
 
         return {"preds": preds_std,
@@ -814,7 +810,7 @@ class MetricBias(Metric):
         self.pred_step = pred_step 
         
         self.add_state("preds", default=[], dist_reduce_fx="cat")
-        self.add_state("pearo", default=[], dist_reduce_fx="cat")
+        self.add_state("obs", default=[], dist_reduce_fx="cat")
         # dist_reduce_fx="cat" because we gather multiple batch before computing std
 
         self.dataset_name = dataset_info.name
@@ -831,34 +827,29 @@ class MetricBias(Metric):
             raise ValueError("preds and target must have the same shape")
 
         self.preds.append(pred)
-        self.pearo.append(target)
+        self.obs.append(target)
 
-    def compute(self, num_batch, prefix: str = "val") -> dict:
+    def compute(self, prefix: str = "val") -> dict:
         """
         Compute spread mean for each channels/features, return a dict.
         Should be called at each epoch's end
         """
         # Ensure concatenating into a single tensor along device dimension
         preds = dim_zero_cat(self.preds)
-        pearo = dim_zero_cat(self.pearo)
-        env_path = os.environ["TITAN_PROXY_OBS"]
-        target = torch.from_numpy(np.load(f"{env_path}/titan_gt_rescaled_batch_{num_batch}.npy")).to(preds.device)
-        target = target[:,1:,...]  # remove time dim 0
+        obs = dim_zero_cat(self.obs)
         # print(f"target shape: {target.shape}")
         # print(f"preds shape: {preds.shape}")
         # target = target[...,:8]
         # skill computation
-        preds_bias = torch.mean(preds.mean(dim=0) - target[0], dim=(1,2))
-        pearo_bias = torch.mean(pearo.mean(dim=0) - target[0], dim=(1,2))
+        preds_bias = torch.mean(preds.mean(dim=0) - obs[0], dim=(1,2))
         # Reconvert to initial type then reset metric's state
         self.preds = []
-        self.pearo = []
+        self.obs = []
         self.reset()
 
-        return {"preds": preds_bias, # (pred_steps, d_f)
-                "pearo": pearo_bias, # (pred_steps, d_f)
-                }
+        return {"preds": preds_bias} # (pred_steps, d_f)
 
+                
 class MetricSquaredError(Metric):
     """
     Compute the skill = RMSE of ensemble mean (Fortin et al. 2014) with TITAN test target rollout as ground truth
@@ -869,7 +860,7 @@ class MetricSquaredError(Metric):
         self.pred_step = pred_step 
         
         self.add_state("preds", default=[], dist_reduce_fx="cat")
-        self.add_state("pearo", default=[], dist_reduce_fx="cat")
+        self.add_state("obs", default=[], dist_reduce_fx="cat")
         # dist_reduce_fx="cat" because we gather multiple batch before computing std
 
         self.dataset_name = dataset_info.name
@@ -886,33 +877,28 @@ class MetricSquaredError(Metric):
             raise ValueError("preds and target must have the same shape")
 
         self.preds.append(pred)
-        self.pearo.append(target)
+        self.obs.append(target)
 
-    def compute(self, num_batch, prefix: str = "val") -> dict:
+    def compute(self, prefix: str = "val") -> dict:
         """
         Compute spread mean for each channels/features, return a dict.
         Should be called at each epoch's end
         """
         # Ensure concatenating into a single tensor along device dimension
         preds = dim_zero_cat(self.preds)
-        pearo = dim_zero_cat(self.pearo)
-        env_path = os.environ["TITAN_PROXY_OBS"]
-        target = torch.from_numpy(np.load(f"{env_path}/titan_gt_rescaled_batch_{num_batch}.npy")).to(preds.device)
-        target = target[:,1:,...]  # remove time dim 0
+        obs = dim_zero_cat(self.obs)
         # print(f"target shape: {target.shape}")
         # print(f"preds shape: {preds.shape}")
         # target = target[...,:8]
         # skill computation
-        preds_skill = torch.mean((preds.mean(dim=0) - target[0]) ** 2, dim=(1,2))
-        pearo_skill = torch.mean((pearo.mean(dim=0) - target[0]) ** 2, dim=(1,2))
+        preds_skill = torch.mean((preds.mean(dim=0) - obs[0]) ** 2, dim=(1,2))
         # Reconvert to initial type then reset metric's state
         self.preds = []
-        self.pearo = []
+        self.obs = []
         self.reset()
 
-        return {"preds": preds_skill, # (pred_steps, d_f)
-                "pearo": pearo_skill, # (pred_steps, d_f)
-                }
+        return {"preds": preds_skill} # (pred_steps, d_f)
+                
 
 class MetricUnbiasedVariance(Metric):
     """
@@ -924,7 +910,6 @@ class MetricUnbiasedVariance(Metric):
         self.pred_step = pred_step 
         
         self.add_state("preds", default=[], dist_reduce_fx="cat")
-        self.add_state("pearo", default=[], dist_reduce_fx="cat")
         # dist_reduce_fx="cat" because we gather multiple batch before computing std
 
         self.dataset_name = dataset_info.name
@@ -941,7 +926,6 @@ class MetricUnbiasedVariance(Metric):
             raise ValueError("preds and target must have the same shape")
 
         self.preds.append(pred)
-        self.pearo.append(target)
 
     def compute(self, prefix: str = "val") -> dict:
         """
@@ -950,18 +934,14 @@ class MetricUnbiasedVariance(Metric):
         """
         # Ensure concatenating into a single tensor along device dimension
         preds = dim_zero_cat(self.preds)
-        pearo = dim_zero_cat(self.pearo)
         # skill computation
         preds_unbVar = torch.mean(torch.var(preds, dim=0, correction=1), dim=(1,2))
-        pearo_unbVar = torch.mean(torch.var(pearo, dim=0, correction=1), dim=(1,2))
         # Reconvert to initial type then reset metric's state
         self.preds = []
-        self.pearo = []
         self.reset()
 
-        return {"preds": preds_unbVar, # (pred_steps, d_f)
-                "pearo": pearo_unbVar, # (pred_steps, d_f)
-                }
+        return {"preds": preds_unbVar} # (pred_steps, d_f)
+                
 
 class MetricCRPS(Metric):
     """
@@ -973,7 +953,7 @@ class MetricCRPS(Metric):
         self.pred_step = pred_step
 
         self.add_state("preds", default=[], dist_reduce_fx="cat")
-        self.add_state("pearo", default=[], dist_reduce_fx="cat")
+        self.add_state("obs", default=[], dist_reduce_fx="cat")
         self.dataset_name = dataset_info.name
 
     def update(self, pred: torch.Tensor, target: torch.Tensor, *args):
@@ -987,59 +967,173 @@ class MetricCRPS(Metric):
             raise ValueError("preds and target must have the same shape")
 
         self.preds.append(pred)
-        self.pearo.append(target)
+        self.obs.append(target)
 
-    def compute(self, num_batch, prefix: str = "val") -> dict:
+    def compute(self, prefix: str = "val") -> dict:
         """
-        Computes the CRPS score using ensemble approximation:
+        Memory-efficient and compute-optimized CRPS:
         CRPS = 1/N * sum_i |x_i - y| - 0.5/N^2 * sum_{i,j} |x_i - x_j|
-        where x_i are ensemble members and y is the target.
-        Uses a for-loop to reduce GPU memory usage when computing pairwise diffs.
         """
-        preds = dim_zero_cat(self.preds)  # (ensemble_size, pred_steps, ..., d_f)
-        pearo = dim_zero_cat(self.pearo)  # (ensemble_size, pred_steps, ..., d_f)
-        ensemble_size = preds.shape[0]
 
-        # Load full ground truth
-        env_path = os.environ["TITAN_PROXY_OBS"]
-        target = torch.from_numpy(
-            np.load(f"{env_path}/titan_gt_rescaled_batch_{num_batch}.npy")
-        ).to(preds.device)
-        target = target[:,1:,...]  # remove time dim 0
+        preds = dim_zero_cat(self.preds)   # (N, pred_steps, ..., d_f)
+        target = dim_zero_cat(self.obs)    # (N, pred_steps, ..., d_f)
 
-        # Expand target to match preds
-        target = target.expand_as(preds)
+        N = preds.shape[0]
 
-        # Term 1: Mean absolute error between ensemble and ground truth
-        term1 = torch.mean(torch.abs(preds - target), dim=0)  # (pred_steps, ..., d_f)
-        # Term 2: Mean absolute difference between ensemble members using for-loop
+        # ---- Term 1: fully vectorized (keep this, it's efficient) ----
+        term1 = torch.mean(torch.abs(preds - target), dim=0)
+
+        # ---- Term 2: optimized pairwise accumulation ----
         term2 = torch.zeros_like(term1)
-        count = ensemble_size/2 # classic CRPS, count diagonal terms / 2
-        for i in range(ensemble_size):
-            for j in range(i + 1, ensemble_size):
-                diff_ij = torch.abs(preds[i] - preds[j])  # (pred_steps, ..., d_f)
-                term2 += diff_ij
-                count += 1
-        term2 = term2 / count  # (pred_steps, ..., d_f)
-        preds_crps = term1 - 0.5 * term2
 
-        # Term 1: Mean absolute error between ensemble and ground truth
-        term1 = torch.mean(torch.abs(pearo - target), dim=0)  # (pred_steps, ..., d_f)
-        # Term 2: Mean absolute difference between ensemble members using for-loop
-        term2 = torch.zeros_like(term1)
-        count = ensemble_size/2 # classic CRPS 
-        for i in range(ensemble_size):
-            for j in range(i + 1, ensemble_size):
-                diff_ij = torch.abs(pearo[i] - pearo[j])  # (pred_steps, ..., d_f)
-                term2 += diff_ij
-                count += 1
-        term2 = term2 / count  # (pred_steps, ..., d_f)
-        pearo_crps = term1 - 0.5 * term2
+        for i in range(N - 1):
+            # Only compute upper triangle (j > i)
+            diff = torch.abs(preds[i+1:] - preds[i])   # (N-i-1, ...)
+            term2 += diff.sum(dim=0)
+
+        # Normalize (accounts for symmetry + 0.5 factor)
+        term2 = term2 / (N * N)
+
+        preds_crps = term1 - term2
 
         # Reset internal state
         self.preds = []
-        self.pearo = []
+        self.obs = []
         self.reset()
 
-        return {"preds": preds_crps,
-                "pearo": pearo_crps} # (pred_steps, N_grid, d_f)
+        return {"preds": preds_crps}
+    
+    
+class MetricES(Metric):
+    """
+    Compute the Energy Score with TITAN test target rollout as ground truth
+    """
+
+    def __init__(self, dataset_info: DatasetInfo, pred_step: int = 0):
+        super().__init__()
+        self.pred_step = pred_step
+
+        self.add_state("preds", default=[], dist_reduce_fx="cat")
+        self.add_state("obs", default=[], dist_reduce_fx="cat")
+        self.dataset_name = dataset_info.name
+
+    def update(self, pred: torch.Tensor, target: torch.Tensor, *args):
+        """
+        Assuming a batch contains the members of a same ensemble,
+        compute the spread of batch=members for both target and pred.
+        predictions: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
+        called at each end of step
+        """
+        if pred.shape != target.shape:
+            raise ValueError("preds and target must have the same shape")
+
+        self.preds.append(pred)
+        self.obs.append(target)
+
+    def compute(self, prefix: str = "val") -> dict:
+        """
+        Memory-efficient Energy Score
+        """
+
+        preds = dim_zero_cat(self.preds)   # (M, T, ..., d_f)
+        target = dim_zero_cat(self.obs)    # (M, T, ..., d_f)
+
+        M = preds.shape[0]
+
+        # Flatten spatial + feature dims
+        preds_flat = preds.reshape(M, preds.shape[1], -1)   # (M, T, D)
+        target_flat = target.reshape(M, target.shape[1], -1)
+
+        # ---- Term 1: fully vectorized ----
+        term1 = torch.norm(preds_flat - target_flat, dim=-1).mean(dim=0)
+
+        # ---- Term 2: optimized pairwise ----
+        term2 = torch.zeros_like(term1)
+
+        for i in range(M - 1):
+            # (M-i-1, T, D)
+            diff = preds_flat[i+1:] - preds_flat[i]
+
+            # (M-i-1, T)
+            dist = torch.norm(diff, dim=-1)
+
+            term2 += dist.sum(dim=0)
+
+        # Normalize (accounts for symmetry + 1/2 factor)
+        term2 = term2 / (M * M)
+
+        energy_score = term1 - term2
+
+        # Reset internal state
+        self.preds = []
+        self.obs = []
+        self.reset()
+
+        return {"preds": energy_score}
+    
+class MetricVario(Metric):
+    """
+    Compute the Variogram with TITAN test target rollout as ground truth
+    """
+
+    def __init__(self, dataset_info: DatasetInfo, pred_step: int = 0):
+        super().__init__()
+        self.pred_step = pred_step
+
+        self.add_state("preds", default=[], dist_reduce_fx="cat")
+        self.add_state("obs", default=[], dist_reduce_fx="cat")
+        self.dataset_name = dataset_info.name
+
+    def update(self, pred: torch.Tensor, target: torch.Tensor, *args):
+        """
+        Assuming a batch contains the members of a same ensemble,
+        compute the spread of batch=members for both target and pred.
+        predictions: (B=Mb, pred_steps, N_grid, d_f) or (B=Mb, pred_steps, W, H, d_f)
+        called at each end of step
+        """
+        if pred.shape != target.shape:
+            raise ValueError("preds and target must have the same shape")
+
+        self.preds.append(pred)
+        self.obs.append(target)
+
+    def compute(self, prefix: str = "val") -> dict:
+        """
+        Memory-efficient variogram score
+        """
+
+        preds = dim_zero_cat(self.preds)   # (M, pred_steps, ..., d_f)
+        target = dim_zero_cat(self.obs)    # (M, pred_steps, ..., d_f)
+
+        M = preds.shape[0]
+
+        # ---- Target term (compute once, no ensemble dimension) ----
+        t = target[0]  # (pred_steps, ..., d_f)
+
+        diff_target = torch.sqrt(
+            torch.abs(t.unsqueeze(-1) - t.unsqueeze(-2))
+        )  # (pred_steps, ..., d_f, d_f)
+
+        # ---- Ensemble mean of pairwise differences ----
+        term2 = torch.zeros_like(diff_target)
+
+        for i in range(M):
+            p = preds[i]  # (pred_steps, ..., d_f)
+
+            diff = torch.sqrt(
+                torch.abs(p.unsqueeze(-1) - p.unsqueeze(-2))
+            )  # (pred_steps, ..., d_f, d_f)
+
+            term2 += diff
+
+        term2 = term2 / M
+
+        # ---- Final variogram score ----
+        vario = torch.sum((diff_target - term2) ** 2, dim=(-1, -2))
+
+        # Reset internal state
+        self.preds = []
+        self.obs = []
+        self.reset()
+
+        return {"preds": vario}
