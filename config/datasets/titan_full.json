@@ -18,70 +18,124 @@
             "obs_step_btw_t0": 3600
         }
     },
-    "grid":{
+    "grid": {
         "name": "PAAROME_1S40",
         "border_size": 0,
-        "subdomain": [100, 612, 240, 880],
+        "subdomain": [
+            100,
+            612,
+            240,
+            880
+        ],
         "proj_name": "PlateCarree",
         "projection_kwargs": {}
     },
-    "settings":{
+    "settings": {
         "standardize": true,
         "file_format": "npy"
     },
     "params": {
         "aro_t2m": {
-            "levels": [2],
+            "levels": [
+                2
+            ],
             "kind": "input_output"
         },
         "aro_r2": {
-            "levels": [2],
+            "levels": [
+                2
+            ],
             "kind": "input_output"
         },
         "aro_tp": {
-            "levels": [0],
+            "levels": [
+                0
+            ],
             "kind": "input_output"
         },
         "aro_u10": {
-            "levels": [10],
+            "levels": [
+                10
+            ],
             "kind": "input_output"
         },
         "aro_v10": {
-            "levels": [10],
+            "levels": [
+                10
+            ],
             "kind": "input_output"
         },
         "aro_t": {
-            "levels": [250, 500, 700, 850],
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input_output"
         },
         "aro_u": {
-            "levels": [250, 500, 700, 850],
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input_output"
         },
         "aro_v": {
-            "levels": [250, 500, 700, 850],
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input_output"
         },
         "aro_z": {
-            "levels": [250, 500, 700, 850],
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input_output"
         },
         "arp_t": {
-            "levels": [250, 500, 700, 850],
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input"
         },
-        "arp_u":{
-            "levels": [250, 500, 700, 850],
+        "arp_u": {
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input"
         },
-        "arp_v":{
-            "levels": [250, 500, 700, 850],
+        "arp_v": {
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input"
         },
-        "arp_z":{
-            "levels": [250, 500, 700, 850],
+        "arp_z": {
+            "levels": [
+                250,
+                500,
+                700,
+                850
+            ],
             "kind": "input"
         }
     }
-    
 }
