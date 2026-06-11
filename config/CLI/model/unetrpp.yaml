@@ -1,7 +1,7 @@
 model:
   model_name: UNETRPP
   model_conf: null # Path to model_conf
-  loss_name:  mse #  or mae   ClassicCRPS  afcrps 
+  loss_name:  mse #ClassicCRPS # or mae ThermalFCRPS mae2crps   afcrps mse 
   num_inter_steps: 1 # Number of intermediary steps (without any data)
   num_samples_to_plot: 1
   training_strategy: scaled_ar #  diff_ar
@@ -29,6 +29,9 @@ model:
     add_skip_connections: true
     attention_code: "torch"
     stochastic: False
-    CondLayerNorm: False # use ConditionalLayerNorm instead of LayerNorm
-    # time_emb_dim: 128
-    # shortcut_length: true # activate flow matching step size embedding
+    CondLayerNorm: True # use ConditionalLayerNorm instead of LayerNorm
+    # Reversed UNET: channels decrease going deeper (opposite of normal UNET)
+    # Set to true for memory-efficient models with faster deep-layer inference
+    # Memory savings: ~15-30% | Speed improvement: ~5-15%
+    reversed_channels: False # Set to true for reversed mode (default: false for normal mode)
+    min_channels: 8 # Minimum channel width when using reversed_channels (prevents too-small dimensions)
