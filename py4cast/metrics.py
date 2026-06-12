@@ -945,7 +945,7 @@ class MetricUnbiasedVariance(Metric):
         self.preds.append(pred)
         self.pearo.append(target)
 
-    def compute(self, prefix: str = "val") -> dict:
+    def compute(self, num_batch, prefix: str = "val") -> dict:
         """
         Compute spread mean for each channels/features, return a dict.
         Should be called at each epoch's end

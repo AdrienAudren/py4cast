@@ -1174,22 +1174,22 @@ class EnScorePlot(MapPlot):
                 target_rescaled = targ * std + mean
 
             self.crps_metric.update(prediction_rescaled, target_rescaled)
-            crps_dict = self.crps_metric.compute(prefix="test")
+            crps_dict = self.crps_metric.compute(num_batch=self.plotted_examples, prefix="test")
             
             self.ES_metric.update(prediction_rescaled, target_rescaled)
-            ES_dict = self.ES_metric.compute(prefix="test")
+            ES_dict = self.ES_metric.compute(num_batch=self.plotted_examples, prefix="test")
 
             self.unbVar_metric.update(prediction_rescaled, target_rescaled)
-            unbVar_dict = self.unbVar_metric.compute(prefix="test")
+            unbVar_dict = self.unbVar_metric.compute(num_batch=self.plotted_examples, prefix="test")
             
             self.error_metric.update(prediction_rescaled, target_rescaled)
-            error_dict = self.error_metric.compute(prefix="test")
+            error_dict = self.error_metric.compute(num_batch=self.plotted_examples, prefix="test")
 
             self.bias_metric.update(prediction_rescaled, target_rescaled)
-            bias_dict = self.bias_metric.compute(prefix="test")
+            bias_dict = self.bias_metric.compute(num_batch=self.plotted_examples, prefix="test")
 
             self.vario_metric.update(prediction_rescaled, target_rescaled)
-            vario_dict = self.vario_metric.compute(prefix="test")
+            vario_dict = self.vario_metric.compute(num_batch=self.plotted_examples, prefix="test")
 
             feature_names = (
                 prediction.feature_names[: self.num_features_to_plot]

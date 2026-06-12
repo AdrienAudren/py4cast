@@ -272,6 +272,7 @@ class DatasetInfo:
     weather_dim: int
     forcing_dim: int
     pred_step: dt.timedelta  # Duration of one step in the dataset.
+    start: dt.datetime  # Start date of the dataset
     statics: Statics  # A lot of static variables
     stats: Stats
     diff_stats: Stats
@@ -659,6 +660,7 @@ class DatasetABC(Dataset):
             weather_dim=self.input_output_dim,
             forcing_dim=self.input_dim,
             pred_step=self.period.forecast_step,
+            start=self.period.start,
             statics=self.statics,
             stats=self.stats,
             diff_stats=self.diff_stats,
