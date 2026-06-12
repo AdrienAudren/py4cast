@@ -756,7 +756,7 @@ class PredictionTimestepPlot(MapPlot):
                     f"t+{t_i}h {dt_i}",
                     vrange=var_vrange,
                     domain_info=obj.dataset_info.domain_info,
-                ) if var_name != "aro_tp_0m" else plot_prediction_tp(
+                ) if var_name != "pearo_tp_0m" else plot_prediction_tp(
                     pred_t[:, :, var_i],
                     target_t[:, :, var_i],
                     obj.interior_2d[:, :, 0],
@@ -934,7 +934,7 @@ class SpreadTimestepPlot(MapPlot):
 
             var_vmin = np.minimum(prediction_var_vmin, target_var_vmin)
             var_vmax = target_var_vmax
-            var_vmax = np.maximum(target_var_vmax, prediction_var_vmax)
+            #var_vmax = np.maximum(target_var_vmax, prediction_var_vmax)
 
             var_vranges = list(zip(var_vmin, var_vmax))
 
@@ -995,7 +995,7 @@ class SpreadTimestepPlot(MapPlot):
                     f"t+{t_i}h {dt_i}",
                     vrange=var_vrange,
                     domain_info=obj.dataset_info.domain_info,
-                    cmap="RdPu",
+                    cmap="viridis",
                 )
                 for var_i, (var_name, var_unit, var_vrange) in enumerate(
                     zip(feature_names, units, var_vranges)
