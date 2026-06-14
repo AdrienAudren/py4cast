@@ -1623,7 +1623,7 @@ class AutoRegressiveLightning(LightningModule):
                     ES_metric=self.ES_metric,
                     vario_metric=self.vario_metric,
                     dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=1,
+                    num_samples_to_plot=31,
                     num_features_to_plot=6,
                     prefix="Test",
                     save_path=self.save_path,
