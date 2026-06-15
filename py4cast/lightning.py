@@ -862,7 +862,9 @@ class AutoRegressiveLightning(LightningModule):
                 if self.noise_strategy == "CondLayerNorm":
                     # generate (32,) noise vectors for stochastic conditional layer normalization
                     # Skillful joint probabilistic weather forecasting from marginals: https://arxiv.org/pdf/2506.10772
-                    epsilon = torch.randn(self.batch_size*self.noise_members, 32, device=prev_states.device)
+                    # epsilon = torch.randn(self.batch_size*self.noise_members, 32, device=prev_states.device)
+                    epsilon_pos = torch.randn(self.batch_size//2, 32, device=prev_states.device)
+                    epsilon = torch.cat([epsilon_pos, -epsilon_pos], dim=0)
                 
                 elif self.noise_strategy == "forcing":
                     # Add noise channel as forcing with noise=True
