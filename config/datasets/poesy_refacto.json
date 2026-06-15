@@ -11,8 +11,8 @@
             "refcst_leadtime_step_in_sec": 3600
         },
         "test": {
-            "start": 20230601,
-            "end": 20230701,
+            "start": 20230501,
+            "end": 20230801,
             "refcst_daily_runs": [
                 75600
             ],
