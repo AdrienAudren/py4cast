@@ -1357,7 +1357,7 @@ class EnScorePlot(MapPlot):
         units = [obj.dataset_info.units[name] for name in feature_names]
         var_figs = []
         
-        if metric_name == "ES" or metric_name == "vario":
+        if metric_name == "ES" or metric_name == "fES" or metric_name == "vario":
             
             lead_times = np.arange(1, mean_metric_preds.shape[0] + 1)
             plt.figure(figsize=(8, 6))
