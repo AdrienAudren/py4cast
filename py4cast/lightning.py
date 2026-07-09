@@ -587,6 +587,26 @@ class AutoRegressiveLightning(LightningModule):
 
         aro_outputs_tensor = out.permute(0, 2, 3, 1).view(B, N_lat, N_lon, d_f)
         return aro_outputs_tensor
+    
+    def smooth_inputs(self, x: torch.Tensor, k_size: int = 1) -> NamedTensor:
+        B, N_lat, N_lon, d_f = x.shape
+        aro_inputs = x.permute(0, 3, 1, 2)
+
+        g_1d = self._get_gaussian_1d(k_size, aro_inputs.device, aro_inputs.dtype)
+
+        # Build separable kernels
+        g_row = g_1d.view(1, 1, 1, -1).repeat(d_f, 1, 1, 1)
+        g_col = g_1d.view(1, 1, -1, 1).repeat(d_f, 1, 1, 1)
+
+        pad = g_1d.numel() // 2
+        aro_inputs_padded = F.pad(aro_inputs, (pad, pad, pad, pad), mode="reflect")
+
+        # Apply separable conv
+        out = F.conv2d(aro_inputs_padded, g_row, groups=d_f)
+        out = F.conv2d(out, g_col, groups=d_f)
+
+        aro_outputs_tensor = out.permute(0, 2, 3, 1)
+        return aro_outputs_tensor
 
     # def _next_x(
     #     self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int, scale_factor: int = 1
@@ -660,6 +680,32 @@ class AutoRegressiveLightning(LightningModule):
     #     )
                 
     #     return x
+    
+    def _next_x_last_smoothed(
+        self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int
+    ) -> torch.Tensor:
+        """
+        Build the next x input for the model at timestep step_idx using the :
+        - previous states
+        - forcing
+        - static features
+        """
+
+        forcing = batch.forcing.select_dim("timestep", step_idx, bare_tensor=False)
+        forcing_tensor = batch.forcing.select_dim("timestep", step_idx)
+
+        last_smoothed = self.smooth_inputs(prev_states.select_dim("timestep", -1), k_size=31)
+
+        x = torch.cat(
+                [prev_states.select_dim("timestep", idx)
+                for idx in range(batch.num_input_steps)] 
+                +
+                [self.grid_static_features[: batch.batch_size], forcing_tensor],
+                dim=forcing.dim_index("features"),
+            )
+
+        return x, last_smoothed
+    
     def _next_x(
         self, batch: ItemBatch, prev_states: NamedTensor, step_idx: int, noise: bool=False
     ) -> torch.Tensor:
@@ -858,7 +904,8 @@ class AutoRegressiveLightning(LightningModule):
             for k in range(num_inter_steps):
                 # x, last_smoothed = self._next_x(batch, prev_states, i, scale_factor=scale_factor) # aro_t smoothed according to scale factor
                 # x, last_smoothed = self._next_x(batch, prev_states, i) # aro_t smoothed according to scale factor
-                x = self._next_x(batch, prev_states, i) 
+                x, last_smoothed = self._next_x_last_smoothed(batch, prev_states, i)
+                # x = self._next_x(batch, prev_states, i) 
                 if self.noise_strategy == "CondLayerNorm":
                     # generate (32,) noise vectors for stochastic conditional layer normalization
                     # Skillful joint probabilistic weather forecasting from marginals: https://arxiv.org/pdf/2506.10772
@@ -893,13 +940,13 @@ class AutoRegressiveLightning(LightningModule):
                 # We update the latest of our prev_states with the network output
                 if scale_y:
 
-                    last_prev_state = prev_states.select_dim("timestep", -1)
-                    if self.noise_strategy in ["CondLayerNorm", "forcing"]:
-                        last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
-                    
-                    # last_prev_state = last_smoothed
+                    # last_prev_state = prev_states.select_dim("timestep", -1)
                     # if self.noise_strategy in ["CondLayerNorm", "forcing"]:
                     #     last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
+                    
+                    last_prev_state = last_smoothed
+                    if self.noise_strategy in ["CondLayerNorm", "forcing"]:
+                        last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
 
 
                     # predicted_state = (
@@ -909,7 +956,20 @@ class AutoRegressiveLightning(LightningModule):
                     #     + step_diff_mean
                     # )
 
-                    predicted_state = y
+                    predicted_state_z = (
+                        # select the last timestep
+                        last_prev_state[...,-4:]
+                        + y[...,-4:] * step_diff_std[...,-4:]
+                        + step_diff_mean[...,-4:]
+                    )
+                
+
+                    predicted_state_others = y[...,:-4]
+
+                    predicted_state = torch.cat(
+                        [predicted_state_others, predicted_state_z],
+                        dim=-1,
+                    )
                 else:
                     predicted_state = prev_states.select_dim("timestep", -1) + y
 

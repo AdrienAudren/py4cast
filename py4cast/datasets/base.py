@@ -828,7 +828,7 @@ class DatasetABC(Dataset):
             return Stats(fname=self.cache_dir / "diff_stats.pt")
         else:
             # return Stats(fname=self.cache_dir / "diff_stats_1order_center.pt")
-            return Stats(fname=self.cache_dir / "diff_stats.pt")
+            return Stats(fname=self.cache_dir / "diff_k31_1h_stats.pt")
     
     @cached_property
     def multi_scale_stats(self) -> Stats:

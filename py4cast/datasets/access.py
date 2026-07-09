@@ -362,9 +362,10 @@ class Stats:
         return self.stats.items()
 
     def __getitem__(self, shortname: str):
-        # return self.stats[shortname[2:]] if self.fname==Path("/dataset/POESY/diff_stats_2order.pt") else self.stats[shortname]
+        # print(f"Accessing stats for {shortname} from {self.fname}")
+        return self.stats[shortname[2:]] if self.fname==Path("/net/172.16.118.188/data/ai4sim/weather_forecast/data/AROME/full/diff_k31_1h_stats.pt") else self.stats[shortname]
         # return self.stats[shortname[2:]] if self.fname==Path("/dataset/POESY/multi_scale_gk_stats.pt") else self.stats[shortname]
-        return self.stats[shortname]
+        # return self.stats[shortname]
         
         
 

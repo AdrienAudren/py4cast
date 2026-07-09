@@ -994,65 +994,58 @@ class MetricCRPS(Metric):
 
     def compute(self, num_batch, prefix: str = "val") -> dict:
         """
-        Memory-efficient and compute-optimized CRPS:
-        CRPS = 1/N * sum_i |x_i - y| - 0.5/N^2 * sum_{i,j} |x_i - x_j|
+        Memory-efficient and compute-optimized CRPS (+ fair CRPS):
+        CRPS       = 1/N * sum_i |x_i - y| - 1/N^2       * sum_{i<j} |x_i - x_j|
+        fair-CRPS  = 1/N * sum_i |x_i - y| - 1/(N(N-1))  * sum_{i<j} |x_i - x_j|
         """
-
         preds = dim_zero_cat(self.preds)   # (N, pred_steps, ..., d_f)
-        pearo = dim_zero_cat(self.pearo)  # (N, pred_steps, ..., d_f)
+        pearo = dim_zero_cat(self.pearo)   # (N, pred_steps, ..., d_f)
 
         N = preds.shape[0]
-        
+        inv_N2 = 1.0 / (N * N)
+        inv_N_Nm1 = 1.0 / (N * (N - 1))  # fair-CRPS normalizer
+
         # Load full ground truth
         env_path = os.environ["TITAN_PROXY_OBS"]
         target = torch.from_numpy(
             np.load(f"{env_path}/titan_gt_rescaled_batch_{num_batch}.npy")
         ).to(preds.device)
-        target = target[:,1:,...]  # remove time dim 0
-        
-        # Expand target to match preds
-        target = target.expand_as(preds)
+        target = target[:, 1:, ...]  # remove time dim 0
 
-        # ---- Term 1: fully vectorized (keep this, it's efficient) ----
-        term1 = torch.mean(torch.abs(preds - target), dim=0)
+        # ---- Term 1: fully vectorized, stacked for a single kernel pass ----
+        stacked = torch.stack([preds, pearo], dim=0)  # (2, N, ...)
+        tgt = torch.stack(
+            [target.expand_as(preds), target.expand_as(pearo)], dim=0
+        )  # (2, N, ...)
 
-        # ---- Term 2: optimized pairwise accumulation ----
-        term2 = torch.zeros_like(term1)
+        term1 = torch.mean(torch.abs(stacked - tgt), dim=1)  # (2, ...)
 
-        for i in range(N - 1):
-            # Only compute upper triangle (j > i)
-            diff = torch.abs(preds[i+1:] - preds[i])   # (N-i-1, ...)
-            term2 += diff.sum(dim=0)
-
-        # Normalize (accounts for symmetry + 0.5 factor)
-        term2 = term2 / (N * N)
-
-        preds_crps = term1 - term2
-        
-        
-        # ---- Term 1: fully vectorized (keep this, it's efficient) ----
-        term1 = torch.mean(torch.abs(pearo - target), dim=0)
-
-        # ---- Term 2: optimized pairwise accumulation ----
-        term2 = torch.zeros_like(term1)
+        # ---- Term 2: single merged loop, one accumulator, two normalizations ----
+        pair_sum = torch.zeros_like(term1)  # sum_{i<j} |x_i - x_j|, shared by both scores
 
         for i in range(N - 1):
-            # Only compute upper triangle (j > i)
-            diff = torch.abs(pearo[i+1:] - pearo[i])   # (N-i-1, ...)
-            term2 += diff.sum(dim=0)
+            pair_sum += torch.abs(stacked[:, i + 1:] - stacked[:, i:i + 1]).sum(dim=1)
 
-        # Normalize (accounts for symmetry + 0.5 factor)
-        term2 = term2 / (N * N)
+        term2 = pair_sum * inv_N2
+        term2_fair = pair_sum * inv_N_Nm1
 
-        pearo_crps = term1 - term2
+        crps = term1 - term2
+        crps_fair = term1 - term2_fair
+
+        preds_crps, pearo_crps = crps[0], crps[1]
+        preds_crps_fair, pearo_crps_fair = crps_fair[0], crps_fair[1]
 
         # Reset internal state
         self.preds = []
         self.pearo = []
         self.reset()
 
-        return {"preds": preds_crps,
-                "pearo": pearo_crps}
+        return {
+            "preds": preds_crps,
+            "pearo": pearo_crps,
+            "preds_fair": preds_crps_fair,
+            "pearo_fair": pearo_crps_fair,
+        }
 
 
 class MetricES(Metric):
@@ -1083,77 +1076,64 @@ class MetricES(Metric):
 
     def compute(self, num_batch, prefix: str = "val") -> dict:
         """
-        Memory-efficient Energy Score
+        Memory-efficient Energy Score (+ fair Energy Score):
+        ES       = 1/M * sum_i ||x_i - y|| - 1/M^2      * sum_{i<j} ||x_i - x_j||
+        fair-ES  = 1/M * sum_i ||x_i - y|| - 1/(M(M-1)) * sum_{i<j} ||x_i - x_j||
         """
-
         preds = dim_zero_cat(self.preds)   # (M, T, ..., d_f)
-        pearo = dim_zero_cat(self.pearo)  # (M, T, ..., d_f)
+        pearo = dim_zero_cat(self.pearo)   # (M, T, ..., d_f)
 
         M = preds.shape[0]
-        
+        inv_M2 = 1.0 / (M * M)
+        inv_M_Mm1 = 1.0 / (M * (M - 1))  # fair-ES normalizer
+
         # Load full ground truth
         env_path = os.environ["TITAN_PROXY_OBS"]
         target = torch.from_numpy(
             np.load(f"{env_path}/titan_gt_rescaled_batch_{num_batch}.npy")
         ).to(preds.device)
-        target = target[:,1:,...]  # remove time dim 0
-        
-        # Expand target to match preds
-        target = target.expand_as(preds)
+        target = target[:, 1:, ...]  # remove time dim 0
 
         # Flatten spatial + feature dims
         preds_flat = preds.reshape(M, preds.shape[1], -1)   # (M, T, D)
-        target_flat = target.reshape(M, target.shape[1], -1)   # (M, T, D)
         pearo_flat = pearo.reshape(M, pearo.shape[1], -1)   # (M, T, D)
+        target_preds_flat = target.expand_as(preds).reshape(M, preds.shape[1], -1)
+        target_pearo_flat = target.expand_as(pearo).reshape(M, pearo.shape[1], -1)
 
-        # ---- Term 1: fully vectorized ----
-        term1 = torch.norm(preds_flat - target_flat, dim=-1).mean(dim=0)
+        # ---- Term 1: fully vectorized, stacked for a single kernel pass ----
+        stacked = torch.stack([preds_flat, pearo_flat], dim=0)          # (2, M, T, D)
+        tgt_stacked = torch.stack([target_preds_flat, target_pearo_flat], dim=0)  # (2, M, T, D)
 
-        # ---- Term 2: optimized pairwise ----
-        term2 = torch.zeros_like(term1)
+        term1 = torch.norm(stacked - tgt_stacked, dim=-1).mean(dim=1)   # (2, T)
 
-        for i in range(M - 1):
-            # (M-i-1, T, D)
-            diff = preds_flat[i+1:] - preds_flat[i]
-
-            # (M-i-1, T)
-            dist = torch.norm(diff, dim=-1)
-
-            term2 += dist.sum(dim=0)
-
-        # Normalize (accounts for symmetry + 1/2 factor)
-        term2 = term2 / (M * M)
-
-        preds_energy_score = term1 - term2
-        
-        
-         # ---- Term 1: fully vectorized ----
-        term1 = torch.norm(pearo_flat - target_flat, dim=-1).mean(dim=0)
-
-        # ---- Term 2: optimized pairwise ----
-        term2 = torch.zeros_like(term1)
+        # ---- Term 2: single merged loop, one accumulator, two normalizations ----
+        pair_sum = torch.zeros_like(term1)  # sum_{i<j} ||x_i - x_j||, shared by both scores
 
         for i in range(M - 1):
-            # (M-i-1, T, D)
-            diff = pearo_flat[i+1:] - pearo_flat[i]
+            # (2, M-i-1, T, D) -> norm over D -> (2, M-i-1, T) -> sum over M-i-1 -> (2, T)
+            diff = stacked[:, i + 1:] - stacked[:, i:i + 1]
+            pair_sum += torch.norm(diff, dim=-1).sum(dim=1)
 
-            # (M-i-1, T)
-            dist = torch.norm(diff, dim=-1)
+        term2 = pair_sum * inv_M2
+        term2_fair = pair_sum * inv_M_Mm1
 
-            term2 += dist.sum(dim=0)
+        energy_score = term1 - term2
+        energy_score_fair = term1 - term2_fair
 
-        # Normalize (accounts for symmetry + 1/2 factor)
-        term2 = term2 / (M * M)
-
-        pearo_energy_score = term1 - term2
+        preds_energy_score, pearo_energy_score = energy_score[0], energy_score[1]
+        preds_energy_score_fair, pearo_energy_score_fair = energy_score_fair[0], energy_score_fair[1]
 
         # Reset internal state
         self.preds = []
         self.pearo = []
         self.reset()
 
-        return {"preds": preds_energy_score,
-                "pearo": pearo_energy_score}
+        return {
+            "preds": preds_energy_score,
+            "pearo": pearo_energy_score,
+            "preds_fair": preds_energy_score_fair,
+            "pearo_fair": pearo_energy_score_fair,
+        }
 
 class MetricVario(Metric):
     """

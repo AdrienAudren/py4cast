@@ -1113,9 +1113,13 @@ class EnScorePlot(MapPlot):
 
         self.crps_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
         self.crps_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        self.fcrps_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
+        self.fcrps_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
         
         self.ES_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test))
         self.ES_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test))
+        self.fES_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test))
+        self.fES_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test))
 
         self.bias_pred = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
         self.bias_pearo = np.zeros((self.num_samples_to_plot, num_pred_steps_test, self.num_features_to_plot))
@@ -1202,12 +1206,16 @@ class EnScorePlot(MapPlot):
 
                 self.crps_pred[self.plotted_examples] = crps_dict["preds"].mean(dim=(1, 2)).cpu().numpy() # mean over spatial dimensions
                 self.crps_pearo[self.plotted_examples] = crps_dict["pearo"].mean(dim=(1, 2)).cpu().numpy()
-                
+                self.fcrps_pred[self.plotted_examples] = crps_dict["preds_fair"].mean(dim=(1, 2)).cpu().numpy()
+                self.fcrps_pearo[self.plotted_examples] = crps_dict["pearo_fair"].mean(dim=(1, 2)).cpu().numpy()
+
                 self.vario_pred[self.plotted_examples] = vario_dict["preds"].mean(dim=(1, 2)).cpu().numpy() # mean over spatial dimensions
                 self.vario_pearo[self.plotted_examples] = vario_dict["pearo"].mean(dim=(1, 2)).cpu().numpy()
                 
                 self.ES_pred[self.plotted_examples] = ES_dict["preds"].cpu().numpy()
                 self.ES_pearo[self.plotted_examples] = ES_dict["pearo"].cpu().numpy()
+                self.fES_pred[self.plotted_examples] = ES_dict["preds_fair"].cpu().numpy()
+                self.fES_pearo[self.plotted_examples] = ES_dict["pearo_fair"].cpu().numpy()
 
                 self.mean_unbVar_pred[self.plotted_examples] = unbVar_dict["preds"].cpu().numpy()
                 self.mean_unbVar_pearo[self.plotted_examples] = unbVar_dict["pearo"].cpu().numpy()
@@ -1227,12 +1235,16 @@ class EnScorePlot(MapPlot):
                 # Average numpy arrays over all examples
                 mean_crps_pred = np.mean(self.crps_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
                 mean_crps_pearo = np.mean(self.crps_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
+                mean_fcrps_pred = np.mean(self.fcrps_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
+                mean_fcrps_pearo = np.mean(self.fcrps_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot
                 
                 mean_vario_pred = np.mean(self.vario_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
                 mean_vario_pearo = np.mean(self.vario_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
                 
                 mean_ES_pred = np.mean(self.ES_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test)
                 mean_ES_pearo = np.mean(self.ES_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test)
+                mean_fES_pred = np.mean(self.fES_pred[:self.plotted_examples], axis=0) # shape (num_pred_steps_test)
+                mean_fES_pearo = np.mean(self.fES_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test)
 
                 mean_unbVar_pred = np.sqrt(np.mean(self.mean_unbVar_pred[:self.plotted_examples], axis=0))
                 mean_unbVar_pearo = np.sqrt(np.mean(self.mean_unbVar_pearo[:self.plotted_examples], axis=0))
@@ -1247,13 +1259,21 @@ class EnScorePlot(MapPlot):
                 mean_bias_pearo = np.mean(self.bias_pearo[:self.plotted_examples], axis=0) # shape (num_pred_steps_test, self.num_features_to_plot)
 
                 # Plot figs only on main process
-                for metric_name in ["crps", "ES", "bias", "spread_error_ratio", "spread", "error", "vario"]:
+                for metric_name in ["crps", "fcrps", "ES", "fES", "bias", "spread_error_ratio", "spread", "error", "vario"]:
                     if metric_name == "crps":
                         self.plot_curves(
                             obj,
                             metric_name,
                             mean_crps_pred,
                             mean_crps_pearo,
+                            feature_names,
+                        )
+                    elif metric_name == "fcrps":
+                        self.plot_curves(
+                            obj,
+                            metric_name,
+                            mean_fcrps_pred,
+                            mean_fcrps_pearo,
                             feature_names,
                         )
                     elif metric_name == "vario":
@@ -1270,6 +1290,14 @@ class EnScorePlot(MapPlot):
                             metric_name,
                             mean_ES_pred,
                             mean_ES_pearo,
+                            feature_names,
+                        )
+                    elif metric_name == "fES":
+                        self.plot_curves(
+                            obj,
+                            metric_name,
+                            mean_fES_pred,
+                            mean_fES_pearo,
                             feature_names,
                         )
                     elif metric_name == "bias":
@@ -1308,7 +1336,7 @@ class EnScorePlot(MapPlot):
     def plot_curves(
         self,
         obj: "AutoRegressiveLightning",
-        metric_name: Literal["crps", "ES", "bias", "spread_error_ratio", "spread", "error", "vario"],
+        metric_name: Literal["crps", "fcrps", "ES", "fES", "bias", "spread_error_ratio", "spread", "error", "vario"],
         mean_metric_preds: np.ndarray,  # (pred_steps, features)
         mean_metric_pearo: np.ndarray,  # (pred_steps, features)
         feature_names: List[str],
