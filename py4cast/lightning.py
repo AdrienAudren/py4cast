@@ -956,20 +956,22 @@ class AutoRegressiveLightning(LightningModule):
                     #     + step_diff_mean
                     # )
 
-                    predicted_state_z = (
-                        # select the last timestep
-                        last_prev_state[...,-4:]
-                        + y[...,-4:] * step_diff_std[...,-4:]
-                        + step_diff_mean[...,-4:]
-                    )
+                    # predicted_state_z = (
+                    #     # select the last timestep
+                    #     last_prev_state[...,-4:]
+                    #     + y[...,-4:] * step_diff_std[...,-4:]
+                    #     + step_diff_mean[...,-4:]
+                    # )
                 
 
-                    predicted_state_others = y[...,:-4]
+                    # predicted_state_others = y[...,:-4]
 
-                    predicted_state = torch.cat(
-                        [predicted_state_others, predicted_state_z],
-                        dim=-1,
-                    )
+                    # predicted_state = torch.cat(
+                    #     [predicted_state_others, predicted_state_z],
+                    #     dim=-1,
+                    # )
+                    
+                    predicted_state = y
                 else:
                     predicted_state = prev_states.select_dim("timestep", -1) + y
 

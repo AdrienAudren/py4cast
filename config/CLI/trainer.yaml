@@ -1,7 +1,7 @@
 # lightning.pytorch==2.4.0
 seed_everything: true
 
-ckpt_path: "${oc.env:CKPT_DIR}/2Yexpe_mae2afcrps_0-order_10Mb_flatCLN_100_z05/2_stepft_10Mb_bf16/checkpoints/epoch=79-val_mean_loss=3.04.ckpt" #${oc.decode:${oc.env:PATH2CKPT}} #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
+ckpt_path: "${oc.env:CKPT_DIR}/crps_0-order_3Mb_eps32_StyleModConv_v2/4_stepft/checkpoints/epoch=132-val_mean_loss=3.24.ckpt" #${oc.decode:${oc.env:PATH2CKPT}} #EMPTY: runs as usual. NOT EMPTY: load weights and hyperparameters from checkpoint
 
 # optimizer:
 #   class_path: torch.optim.AdamW
@@ -29,7 +29,7 @@ trainer:               # Native training arguments of ligthining.pytorch.Trainer
       init_args:
         # default_hp_metric: False # see if tensoboard still works before rm TODO
         save_dir:   ${oc.decode:${oc.env:CKPT_DIR}}  # /scratch/audrena/py4cast_expe/test_repoAI4SIM/                  #titan_30varARP/ #       "/py4cast_root_dir/titan_6var/" "/py4cast_root_dir/test_metrics" # Root directory
-        name:       2Yexpe_mae2afcrps_0-order_10Mb_flatCLN_100_z05/2_stepft_10Mb_bf16                   # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
+        name:       crps_0-order_3Mb_eps32_StyleModConv_v2/4_stepft                   # EMPTY: runs written in save_dir. NOT EMPTY: runs written in save_dir/name
         version:   3m-2023_test_poesy  #Ciaran_ EMPTY: name of the run==version_{i}. NOT EMPTY: name of the run==version
     # Your logs will be saved in save_dir/*name*/version/
     # (checkpoints, config.yaml, images, scores, tensorboard logs, ...)
