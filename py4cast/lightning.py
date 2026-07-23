@@ -904,8 +904,8 @@ class AutoRegressiveLightning(LightningModule):
             for k in range(num_inter_steps):
                 # x, last_smoothed = self._next_x(batch, prev_states, i, scale_factor=scale_factor) # aro_t smoothed according to scale factor
                 # x, last_smoothed = self._next_x(batch, prev_states, i) # aro_t smoothed according to scale factor
-                x, last_smoothed = self._next_x_last_smoothed(batch, prev_states, i)
-                # x = self._next_x(batch, prev_states, i) 
+                # x, last_smoothed = self._next_x_last_smoothed(batch, prev_states, i)
+                x = self._next_x(batch, prev_states, i) 
                 if self.noise_strategy == "CondLayerNorm":
                     # generate (32,) noise vectors for stochastic conditional layer normalization
                     # Skillful joint probabilistic weather forecasting from marginals: https://arxiv.org/pdf/2506.10772
@@ -944,9 +944,9 @@ class AutoRegressiveLightning(LightningModule):
                     # if self.noise_strategy in ["CondLayerNorm", "forcing"]:
                     #     last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
                     
-                    last_prev_state = last_smoothed
-                    if self.noise_strategy in ["CondLayerNorm", "forcing"]:
-                        last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
+                    # last_prev_state = last_smoothed
+                    # if self.noise_strategy in ["CondLayerNorm", "forcing"]:
+                    #     last_prev_state = last_prev_state.unsqueeze(1).expand(-1, self.noise_members, -1, -1, -1).reshape(self.batch_size*self.noise_members, *last_prev_state.shape[1:])
 
 
                     # predicted_state = (
