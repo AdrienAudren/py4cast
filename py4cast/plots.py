@@ -926,6 +926,8 @@ class SpreadTimestepPlot(MapPlot):
             env_path = os.environ["PEARO_STD_MAPS"]
             # if self.count == 0:
             #     np.save(f"{env_path}/pearo_std_map.npy", target_std.cpu().numpy())
+            # save with the count in name
+            np.save(f"{env_path}/pearo_std_map_{self.count}.npy", target_std.cpu().numpy())
             
             prediction_var_vmin = prediction_std.flatten(0, 2).min(dim=0)[0].cpu().numpy() 
             prediction_var_vmax = prediction_std.flatten(0, 2).max(dim=0)[0].cpu().numpy() 

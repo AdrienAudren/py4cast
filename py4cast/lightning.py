@@ -1659,16 +1659,16 @@ class AutoRegressiveLightning(LightningModule):
             if self.ensemble_metrics:
                 metrics["std"] = self.spread_metric
 
-            self.test_plotters = [
-                StateErrorPlot(metrics, save_path=self.save_path),
-                SpatialErrorPlot(),
-                PredictionTimestepPlot(
-                    num_samples_to_plot=self.num_samples_to_plot,
-                    num_features_to_plot=6,
-                    prefix="Test",
-                    save_path=self.save_path,
-                )
-            ]
+            # self.test_plotters = [
+            #     StateErrorPlot(metrics, save_path=self.save_path),
+            #     SpatialErrorPlot(),
+            #     PredictionTimestepPlot(
+            #         num_samples_to_plot=self.num_samples_to_plot,
+            #         num_features_to_plot=6,
+            #         prefix="Test",
+            #         save_path=self.save_path,
+            #     )
+            # ]
 
             if self.ensemble_metrics:
                 self.test_plotters.append(SpreadTimestepPlot(
@@ -1679,20 +1679,20 @@ class AutoRegressiveLightning(LightningModule):
                     prefix="Test",
                     save_path=self.save_path,
                 ))
-                self.test_plotters.append(EnScorePlot(
-                    bias_metric=self.bias_metric,
-                    error_metric=self.error_metric,
-                    unbVar_metric=self.unbVar_metric,
-                    crps_metric=self.crps_metric,
-                    ES_metric=self.ES_metric,
-                    vario_metric=self.vario_metric,
-                    dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=93,
-                    num_features_to_plot=6,
-                    prefix="Test",
-                    save_path=self.save_path,
-                    num_pred_steps_test=self.num_pred_steps_val_test,
-                ))
+                # self.test_plotters.append(EnScorePlot(
+                #     bias_metric=self.bias_metric,
+                #     error_metric=self.error_metric,
+                #     unbVar_metric=self.unbVar_metric,
+                #     crps_metric=self.crps_metric,
+                #     ES_metric=self.ES_metric,
+                #     vario_metric=self.vario_metric,
+                #     dataset_name = self.dataset_info.name,
+                #     num_samples_to_plot=93,
+                #     num_features_to_plot=6,
+                #     prefix="Test",
+                #     save_path=self.save_path,
+                #     num_pred_steps_test=self.num_pred_steps_val_test,
+                # ))
 
     def test_step(self, batch: ItemBatch, batch_idx):
         """
