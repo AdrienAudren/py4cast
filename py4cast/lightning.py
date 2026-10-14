@@ -1675,7 +1675,7 @@ class AutoRegressiveLightning(LightningModule):
                 self.test_plotters.append(SpreadTimestepPlot(
                     metric=self.spread_map_metric,
                     dataset_name = self.dataset_info.name,
-                    num_samples_to_plot=self.num_samples_to_plot,
+                    num_samples_to_plot=93,
                     num_features_to_plot=6,
                     prefix="Test",
                     save_path=self.save_path,
