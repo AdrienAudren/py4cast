@@ -927,7 +927,10 @@ class SpreadTimestepPlot(MapPlot):
             # if self.count == 0:
             #     np.save(f"{env_path}/pearo_std_map.npy", target_std.cpu().numpy())
             # save with the count in name
-            np.save(f"{env_path}/pearo_std_map_{self.count}.npy", target_std.cpu().numpy())
+            if self.count != 91 and self.count != 92:
+                np.save(f"{env_path}/pearo_std_map_{self.count}.npy", target_std.cpu().numpy())
+            elif self.count == 93 :
+                np.save(f"{env_path}/pearo_std_map_91.npy", target_std.cpu().numpy())
             
             prediction_var_vmin = prediction_std.flatten(0, 2).min(dim=0)[0].cpu().numpy() 
             prediction_var_vmax = prediction_std.flatten(0, 2).max(dim=0)[0].cpu().numpy() 

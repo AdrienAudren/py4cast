@@ -1659,6 +1659,7 @@ class AutoRegressiveLightning(LightningModule):
             if self.ensemble_metrics:
                 metrics["std"] = self.spread_metric
 
+            self.test_plotters = []
             # self.test_plotters = [
             #     StateErrorPlot(metrics, save_path=self.save_path),
             #     SpatialErrorPlot(),
